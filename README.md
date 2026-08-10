@@ -55,3 +55,96 @@ After setting the variable, you can run the deployment with the Sepolia network:
 ```shell
 npx hardhat ignition deploy --network sepolia ignition/modules/Counter.ts
 ```
+
+## Publisher service
+
+`service/` is a standalone Express HTTP API that publishes and resolves signals on the deployed `SignalLedger` contract. It's independent of the Hardhat CLI — it reads its own configuration from `.env` and talks to the chain directly via `ethers`.
+
+### Configuration
+
+Copy `.env.example` to `.env` and fill in:
+
+| Variable | Description |
+| --- | --- |
+| `PRIVATE_KEY` | Private key of the wallet that signs `publishSignal`/`resolveSignal` transactions (must be the contract owner). |
+| `CONTRACT_ADDRESS` | Deployed `SignalLedger` address. |
+| `CHAIN_ID` | Chain ID of the target network (`1952` for X Layer testnet). |
+| `RPC_URL` | JSON-RPC endpoint for the target network. |
+| `PORT` | Port to listen on. Optional, defaults to `3001`. |
+
+### Running
+
+```shell
+npm run service
+```
+
+The service binds to `127.0.0.1` only — it is never reachable from outside the host.
+
+### Endpoints
+
+All prices (`entryPrice`, `stopPrice`, `targetPrice`, `exitPrice`) are sent as plain decimals in the request body; the service scales them by `1e8` before submitting to the contract. Response bodies return the raw on-chain (already-scaled) values as strings, since they can exceed `Number.MAX_SAFE_INTEGER`.
+
+Before submitting a transaction, the service replicates the contract's `require()` checks locally — direction/score bounds, stop/target price ordering, and (for `/resolve`) exit-price consistency with the claimed outcome — so invalid input returns a `400` immediately instead of reverting on-chain and burning gas.
+
+#### `GET /health`
+
+Wallet address, native token (OKB) balance, current signal count, and the configured contract address.
+
+```shell
+curl http://127.0.0.1:3001/health
+```
+
+#### `POST /signal`
+
+Publishes a new signal. `expiresAt` is optional (a Unix timestamp in seconds); if omitted, the contract defaults it to 24 hours from publish time. Returns the transaction hash and the assigned signal id.
+
+```shell
+curl -X POST http://127.0.0.1:3001/signal \
+  -H "Content-Type: application/json" \
+  -d '{
+    "token": "ETH",
+    "direction": 2,
+    "score": 7,
+    "entryPrice": 3000.5,
+    "stopPrice": 2900.25,
+    "targetPrice": 3200.75
+  }'
+```
+
+```json
+{ "transactionHash": "0x...", "id": "1" }
+```
+
+#### `POST /resolve`
+
+Resolves an existing signal. `outcome` is `1` (target hit), `2` (stop hit), or `3` (expired unresolved).
+
+```shell
+curl -X POST http://127.0.0.1:3001/resolve \
+  -H "Content-Type: application/json" \
+  -d '{ "id": 1, "outcome": 1, "exitPrice": 3200.75 }'
+```
+
+```json
+{ "transactionHash": "0x...", "id": "1" }
+```
+
+#### `GET /stats`
+
+The contract's aggregate track record. `unresolvedExpired` is exposed separately, but is already folded into `losses` by the contract (see `getStats` in `contracts/SignalLedger.sol`).
+
+```shell
+curl http://127.0.0.1:3001/stats
+```
+
+```json
+{ "totalPublished": "4", "totalResolved": "3", "wins": "1", "losses": "2", "unresolvedExpired": "0" }
+```
+
+#### `GET /signal/:id`
+
+A single signal, or `404` if the id doesn't exist.
+
+```shell
+curl http://127.0.0.1:3001/signal/1
+```
