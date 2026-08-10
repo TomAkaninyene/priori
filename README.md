@@ -148,3 +148,41 @@ A single signal, or `404` if the id doesn't exist.
 ```shell
 curl http://127.0.0.1:3001/signal/1
 ```
+
+## Frontend
+
+`frontend/` is Priori, a read-only Vite + React + TypeScript dashboard for the `SignalLedger` contract. It talks directly to the chain over a public RPC endpoint using `ethers` -- there's no backend, no API keys, and no connection to the publisher service. It's a static site: build it and deploy the output anywhere that serves static files.
+
+### Local dev
+
+```shell
+cd frontend
+npm install
+cp .env.example .env
+npm run dev
+```
+
+Configuration comes entirely from env vars (see `frontend/.env.example`):
+
+| Variable | Description |
+| --- | --- |
+| `VITE_RPC_URL` | Public JSON-RPC endpoint to read from. |
+| `VITE_CONTRACT_ADDRESS` | Deployed `SignalLedger` address. |
+| `VITE_CHAIN_ID` | Chain ID of the target network (`1952` for X Layer testnet). |
+
+### Build
+
+```shell
+cd frontend
+npm run build
+```
+
+Outputs a static site to `frontend/dist`.
+
+### Deploying to Vercel
+
+1. Import this repository into Vercel.
+2. Set the project's **Root Directory** to `frontend`.
+3. Framework preset: **Vite** (Vercel detects this automatically; build command `npm run build`, output directory `dist`).
+4. Add the three env vars above (`VITE_RPC_URL`, `VITE_CONTRACT_ADDRESS`, `VITE_CHAIN_ID`) in the Vercel project settings.
+5. Deploy. Since it's a static site with no server-side code, no other configuration is needed.
