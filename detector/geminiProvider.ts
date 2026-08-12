@@ -22,6 +22,15 @@ if the data doesn't clearly show it.
 conviction_note explaining it. Weigh: how clean the rollover pattern is, whether volume is actually \
 declining, how much of the pump has already faded from the peak, thin-data risk, and that you cannot verify \
 a catalyst is truly absent.
+4. Price levels: suggest stop_price and target_price for entering this short now, at current_price.
+   - stop_price must be greater than current_price. Place it just above the most recent meaningful swing \
+high in the candle data given -- real structure, not an arbitrary round number or a fixed percentage.
+   - target_price must be less than current_price. Base it on a realistic downside objective the data \
+supports, such as a retracement toward base_price, not a formula. Where the structure reasonably allows it, \
+aim for at least 1:2 risk:reward from current_price, but never stretch target_price past what the data \
+supports just to hit that ratio.
+   If the data is too thin to place a defensible stop or target, still return your best-supported numbers \
+(they must be present and correctly ordered) but say so in conviction_note and let it pull the score down.
 
 Calibration:
 - 0-2: doesn't look like a fade at all, or the data is too thin/contradictory to trust.
@@ -42,8 +51,10 @@ const RESPONSE_SCHEMA = {
     conviction_note: { type: "STRING" },
     pattern_confirmed: { type: "BOOLEAN" },
     catalyst_clear: { type: "BOOLEAN" },
+    stop_price: { type: "NUMBER" },
+    target_price: { type: "NUMBER" },
   },
-  required: ["conviction", "conviction_note", "pattern_confirmed", "catalyst_clear"],
+  required: ["conviction", "conviction_note", "pattern_confirmed", "catalyst_clear", "stop_price", "target_price"],
 } as const;
 
 function buildUserPrompt(setup: ConvictionSetup): string {

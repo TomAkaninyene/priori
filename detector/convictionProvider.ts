@@ -36,6 +36,13 @@ export interface ConvictionResult {
   convictionNote: string;
   patternConfirmed: boolean;
   catalystClear: boolean;
+  // The provider's own suggested short levels, or null if it omitted them,
+  // returned a non-finite/non-positive number, or got the direction wrong
+  // (a short's stop must sit above entry, target below entry). null here
+  // does not itself invalidate the whole response -- the caller decides
+  // whether to fall back to the formula-derived levels or skip the publish.
+  stopPrice: number | null;
+  targetPrice: number | null;
 }
 
 export interface ConvictionProvider {
@@ -43,9 +50,20 @@ export interface ConvictionProvider {
   getConviction(setup: ConvictionSetup): Promise<RawConvictionResponse>;
 }
 
-// Fail closed: anything that doesn't match this exact shape returns null,
-// and the caller must skip the publish rather than guess at a default.
-export function validateConvictionResponse(raw: RawConvictionResponse): ConvictionResult | null {
+function validateShortPriceLevel(value: unknown, entryPrice: number, mustBe: "above" | "below"): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
+  if (mustBe === "above" && !(value > entryPrice)) return null;
+  if (mustBe === "below" && !(value < entryPrice)) return null;
+  return value;
+}
+
+// Fail closed: anything that doesn't match this exact shape for the core
+// conviction fields returns null, and the caller must skip the publish
+// rather than guess at a default. stop_price/target_price are validated
+// against entryPrice (direction must be correct for a short) but a bad or
+// missing price level does not null out the whole result -- see
+// ConvictionResult.stopPrice/targetPrice.
+export function validateConvictionResponse(raw: RawConvictionResponse, entryPrice: number): ConvictionResult | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
 
@@ -62,6 +80,8 @@ export function validateConvictionResponse(raw: RawConvictionResponse): Convicti
     convictionNote: r.conviction_note,
     patternConfirmed: r.pattern_confirmed,
     catalystClear: r.catalyst_clear,
+    stopPrice: validateShortPriceLevel(r.stop_price, entryPrice, "above"),
+    targetPrice: validateShortPriceLevel(r.target_price, entryPrice, "below"),
   };
 }
 

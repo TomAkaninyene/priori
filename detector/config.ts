@@ -15,6 +15,12 @@ function str(name: string, fallback: string): string {
   return raw === undefined || raw.trim() === "" ? fallback : raw;
 }
 
+function bool(name: string, fallback: boolean): boolean {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  return raw.trim().toLowerCase() === "true";
+}
+
 function requireEnv(name: string): string {
   const value = process.env[name];
   if (value === undefined || value.trim() === "") {
@@ -41,8 +47,12 @@ export interface DetectorConfig {
 
   // Publishing
   convictionThreshold: number;
+  // Formula-derived stop/target, used only as a fallback -- see
+  // fallbackToFormulaLevels. Primary source is the conviction provider's
+  // own stop_price/target_price.
   stopBufferPct: number;
   targetRrMultiple: number;
+  fallbackToFormulaLevels: boolean;
   publisherUrl: string;
   publishDedupWindowMs: number;
 }
@@ -69,6 +79,7 @@ export function loadConfig(): DetectorConfig {
     convictionThreshold: num("DETECTOR_CONVICTION_THRESHOLD", 7),
     stopBufferPct: num("DETECTOR_STOP_BUFFER_PCT", 0.02),
     targetRrMultiple: num("DETECTOR_TARGET_RR_MULTIPLE", 2),
+    fallbackToFormulaLevels: bool("DETECTOR_FALLBACK_TO_FORMULA_LEVELS", false),
     publisherUrl: str("PRIORI_PUBLISHER_URL", "http://127.0.0.1:3001"),
     publishDedupWindowMs: 24 * 60 * 60 * 1000,
   };

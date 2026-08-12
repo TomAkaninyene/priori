@@ -92,6 +92,8 @@ async function main() {
       })),
     };
 
+    const entryPrice = pump.current;
+
     let raw;
     try {
       raw = await convictionProvider.getConviction(setup);
@@ -102,7 +104,7 @@ async function main() {
     }
     await rateLimiter.record(symbol);
 
-    const result = validateConvictionResponse(raw);
+    const result = validateConvictionResponse(raw, entryPrice);
     if (!result) {
       logger.warn("conviction response failed validation, skipping publish", { symbol, raw });
       return;
@@ -114,6 +116,8 @@ async function main() {
       patternConfirmed: result.patternConfirmed,
       catalystClear: result.catalystClear,
       note: result.convictionNote,
+      stopPrice: result.stopPrice,
+      targetPrice: result.targetPrice,
     });
 
     if (result.conviction < config.convictionThreshold) return;
@@ -123,16 +127,38 @@ async function main() {
       return;
     }
 
-    // No AI-suggested stop/target (Gemini only returns conviction/pattern/
-    // catalyst here) -- derive them deterministically from the pump
-    // structure: stop just above the swing high with a buffer, target at a
-    // configurable risk:reward multiple below entry.
-    const entryPrice = pump.current;
-    const stopPrice = pump.peak * (1 + config.stopBufferPct);
-    const risk = stopPrice - entryPrice;
-    const targetPrice = entryPrice - risk * config.targetRrMultiple;
+    // Prefer the provider's own stop/target -- it can see the actual
+    // structure (swing highs, base/support) that a fixed formula can't.
+    // Only fall back to the deterministic R:R formula when explicitly
+    // enabled; otherwise a missing/invalid/directionally-wrong provider
+    // level fails closed, same as an invalid conviction score.
+    let stopPrice: number;
+    let targetPrice: number;
+    if (result.stopPrice !== null && result.targetPrice !== null) {
+      stopPrice = result.stopPrice;
+      targetPrice = result.targetPrice;
+    } else if (config.fallbackToFormulaLevels) {
+      stopPrice = pump.peak * (1 + config.stopBufferPct);
+      const risk = stopPrice - entryPrice;
+      targetPrice = entryPrice - risk * config.targetRrMultiple;
+      logger.info("provider stop/target invalid or missing, using formula fallback", {
+        symbol,
+        providerStopPrice: result.stopPrice,
+        providerTargetPrice: result.targetPrice,
+        stopPrice,
+        targetPrice,
+      });
+    } else {
+      logger.warn("provider did not return valid directional stop/target and formula fallback is disabled, skipping publish", {
+        symbol,
+        providerStopPrice: result.stopPrice,
+        providerTargetPrice: result.targetPrice,
+      });
+      return;
+    }
+
     if (!(stopPrice > entryPrice) || !(targetPrice > 0 && targetPrice < entryPrice)) {
-      logger.warn("computed entry/stop/target failed sanity check, skipping publish", {
+      logger.warn("entry/stop/target failed sanity check, skipping publish", {
         symbol,
         entryPrice,
         stopPrice,
