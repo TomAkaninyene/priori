@@ -1,7 +1,9 @@
 import { config } from "../lib/config";
+import { getChainName, getExplorerAddressUrl, getSourcifyUrl } from "../lib/chains";
 
-const explorerUrl = `https://www.oklink.com/xlayer-test/address/${config.contractAddress}`;
-const sourcifyUrl = `https://sourcify.dev/server/repo-ui/${config.chainId}/${config.contractAddress}`;
+const explorerUrl = getExplorerAddressUrl(config.chainId, config.contractAddress);
+const sourcifyUrl = getSourcifyUrl(config.chainId, config.contractAddress);
+const chainName = getChainName(config.chainId);
 
 export function Header() {
   return (
@@ -12,7 +14,7 @@ export function Header() {
       </div>
       <nav className="header__links">
         <a href={explorerUrl} target="_blank" rel="noreferrer">
-          Contract on X Layer
+          Contract on {chainName}
         </a>
         <a href={sourcifyUrl} target="_blank" rel="noreferrer">
           Verified on Sourcify
