@@ -44,5 +44,12 @@ export default defineConfig({
       chainId: 1952,
       accounts: PRIVATE_KEY ? [PRIVATE_KEY] : [],
     },
+    xlayerMainnet: {
+      type: "http",
+      chainType: "l1",
+      url: "https://rpc.xlayer.tech",
+      chainId: 196,
+      accounts: PRIVATE_KEY ? [PRIVATE_KEY] : [],
+    },
   },
 });

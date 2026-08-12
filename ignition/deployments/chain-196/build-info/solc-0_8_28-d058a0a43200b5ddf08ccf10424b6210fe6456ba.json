@@ -1,0 +1,49 @@
+{
+  "_format": "hh3-sol-build-info-1",
+  "id": "solc-0_8_28-d058a0a43200b5ddf08ccf10424b6210fe6456ba",
+  "solcVersion": "0.8.28",
+  "solcLongVersion": "0.8.28+commit.7893614a",
+  "compilerType": "solc",
+  "toolVersions": {
+    "hardhat": "3.12.0"
+  },
+  "userSourceNameMap": {
+    "contracts/SignalLedger.sol": "project/contracts/SignalLedger.sol"
+  },
+  "input": {
+    "language": "Solidity",
+    "settings": {
+      "evmVersion": "cancun",
+      "optimizer": {
+        "enabled": true,
+        "runs": 200
+      },
+      "outputSelection": {
+        "*": {
+          "": [
+            "ast"
+          ],
+          "*": [
+            "abi",
+            "evm.bytecode.linkReferences",
+            "evm.bytecode.object",
+            "evm.bytecode.opcodes",
+            "evm.bytecode.sourceMap",
+            "evm.deployedBytecode.immutableReferences",
+            "evm.deployedBytecode.linkReferences",
+            "evm.deployedBytecode.object",
+            "evm.deployedBytecode.opcodes",
+            "evm.deployedBytecode.sourceMap",
+            "evm.methodIdentifiers"
+          ]
+        }
+      },
+      "remappings": []
+    },
+    "sources": {
+      "project/contracts/SignalLedger.sol": {
+        "content": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20;\n\n/// @title SignalLedger\n/// @notice A permanent, append-only record of trading signals. Once\n/// published, a signal's data can never be edited or deleted by anyone,\n/// including the owner. A signal can be resolved exactly once, and that\n/// resolution is final. There is no pause, upgrade, delete, edit, or\n/// ownership-transfer function, and no selfdestruct.\ncontract SignalLedger {\n  struct Signal {\n    uint256 id;\n    string token;\n    uint8 direction; // 1 = short, 2 = long\n    uint8 score; // 0-10\n    uint256 entryPrice; // scaled by 1e8\n    uint256 stopPrice; // scaled by 1e8\n    uint256 targetPrice; // scaled by 1e8\n    uint256 publishedAt;\n    uint256 expiresAt;\n    bool resolved;\n    uint8 outcome; // 1 = target hit, 2 = stop hit, 3 = expired unresolved\n    uint256 exitPrice; // scaled by 1e8\n    uint256 resolvedAt;\n  }\n\n  uint256 public constant DEFAULT_EXPIRY_WINDOW = 24 hours;\n\n  address public immutable owner;\n\n  uint256 public signalCount;\n\n  mapping(uint256 => Signal) private signals;\n\n  event SignalPublished(\n    uint256 indexed id,\n    string token,\n    uint8 direction,\n    uint8 score,\n    uint256 entryPrice,\n    uint256 stopPrice,\n    uint256 targetPrice,\n    uint256 publishedAt,\n    uint256 expiresAt\n  );\n\n  event SignalResolved(\n    uint256 indexed id,\n    uint8 outcome,\n    uint256 exitPrice,\n    uint256 resolvedAt\n  );\n\n  modifier onlyOwner() {\n    require(msg.sender == owner, \"SignalLedger: caller is not the owner\");\n    _;\n  }\n\n  constructor() {\n    owner = msg.sender;\n  }\n\n  function publishSignal(\n    string calldata token,\n    uint8 direction,\n    uint8 score,\n    uint256 entryPrice,\n    uint256 stopPrice,\n    uint256 targetPrice,\n    uint256 expiresAt\n  ) external onlyOwner returns (uint256 id) {\n    id = _publish(token, direction, score, entryPrice, stopPrice, targetPrice, expiresAt);\n  }\n\n  function publishSignal(\n    string calldata token,\n    uint8 direction,\n    uint8 score,\n    uint256 entryPrice,\n    uint256 stopPrice,\n    uint256 targetPrice\n  ) external onlyOwner returns (uint256 id) {\n    id = _publish(\n      token,\n      direction,\n      score,\n      entryPrice,\n      stopPrice,\n      targetPrice,\n      block.timestamp + DEFAULT_EXPIRY_WINDOW\n    );\n  }\n\n  function resolveSignal(uint256 id, uint8 outcome, uint256 exitPrice) external onlyOwner {\n    require(id > 0 && id <= signalCount, \"SignalLedger: signal does not exist\");\n    Signal storage signal = signals[id];\n    require(!signal.resolved, \"SignalLedger: already resolved\");\n    require(\n      outcome == 1 || outcome == 2 || outcome == 3,\n      \"SignalLedger: invalid outcome\"\n    );\n\n    // Cross-check the claimed outcome against the signal's own stop/target\n    // levels using the reported exitPrice. This prevents an outcome being\n    // recorded that contradicts its own reported exit price (e.g. claiming\n    // \"target hit\" with an exit price that never reached the target).\n    // Outcome 3 (expired unresolved) has no price constraint.\n    if (outcome == 1) {\n      if (signal.direction == 1) {\n        require(\n          exitPrice <= signal.targetPrice,\n          \"SignalLedger: exitPrice does not confirm target hit\"\n        );\n      } else {\n        require(\n          exitPrice >= signal.targetPrice,\n          \"SignalLedger: exitPrice does not confirm target hit\"\n        );\n      }\n    } else if (outcome == 2) {\n      if (signal.direction == 1) {\n        require(\n          exitPrice >= signal.stopPrice,\n          \"SignalLedger: exitPrice does not confirm stop hit\"\n        );\n      } else {\n        require(\n          exitPrice <= signal.stopPrice,\n          \"SignalLedger: exitPrice does not confirm stop hit\"\n        );\n      }\n    }\n\n    signal.resolved = true;\n    signal.outcome = outcome;\n    signal.exitPrice = exitPrice;\n    signal.resolvedAt = block.timestamp;\n\n    emit SignalResolved(id, outcome, exitPrice, signal.resolvedAt);\n  }\n\n  function getSignal(uint256 id) external view returns (Signal memory) {\n    require(id > 0 && id <= signalCount, \"SignalLedger: signal does not exist\");\n    return signals[id];\n  }\n\n  function getSignalCount() external view returns (uint256) {\n    return signalCount;\n  }\n\n  /// @notice Tallies the ledger's effective track record.\n  /// @dev A signal left unresolved past its expiresAt (unresolvedExpired) is\n  /// folded into `losses`: a stale signal that nobody ever resolved cannot\n  /// be allowed to improve the record simply by avoiding resolution, so\n  /// silence is scored the same as a stop-out. `unresolvedExpired` is still\n  /// exposed separately so callers can see how many signals are stalled.\n  function getStats()\n    external\n    view\n    returns (\n      uint256 totalPublished,\n      uint256 totalResolved,\n      uint256 wins,\n      uint256 losses,\n      uint256 unresolvedExpired\n    )\n  {\n    totalPublished = signalCount;\n\n    for (uint256 i = 1; i <= signalCount; i++) {\n      Signal storage signal = signals[i];\n      if (signal.resolved) {\n        totalResolved++;\n        if (signal.outcome == 1) {\n          wins++;\n        } else {\n          losses++;\n        }\n      } else if (signal.expiresAt < block.timestamp) {\n        unresolvedExpired++;\n      }\n    }\n\n    losses += unresolvedExpired;\n  }\n\n  function _publish(\n    string calldata token,\n    uint8 direction,\n    uint8 score,\n    uint256 entryPrice,\n    uint256 stopPrice,\n    uint256 targetPrice,\n    uint256 expiresAt\n  ) private returns (uint256 id) {\n    require(expiresAt > block.timestamp, \"SignalLedger: expiresAt not in future\");\n    require(direction == 1 || direction == 2, \"SignalLedger: invalid direction\");\n    require(score <= 10, \"SignalLedger: score above 10\");\n\n    if (direction == 1) {\n      require(stopPrice > entryPrice, \"SignalLedger: short stopPrice must be above entryPrice\");\n      require(targetPrice < entryPrice, \"SignalLedger: short targetPrice must be below entryPrice\");\n    } else {\n      require(stopPrice < entryPrice, \"SignalLedger: long stopPrice must be below entryPrice\");\n      require(targetPrice > entryPrice, \"SignalLedger: long targetPrice must be above entryPrice\");\n    }\n\n    id = ++signalCount;\n    uint256 publishedAt = block.timestamp;\n\n    signals[id] = Signal({\n      id: id,\n      token: token,\n      direction: direction,\n      score: score,\n      entryPrice: entryPrice,\n      stopPrice: stopPrice,\n      targetPrice: targetPrice,\n      publishedAt: publishedAt,\n      expiresAt: expiresAt,\n      resolved: false,\n      outcome: 0,\n      exitPrice: 0,\n      resolvedAt: 0\n    });\n\n    emit SignalPublished(\n      id,\n      token,\n      direction,\n      score,\n      entryPrice,\n      stopPrice,\n      targetPrice,\n      publishedAt,\n      expiresAt\n    );\n  }\n}\n"
+      }
+    }
+  }
+}
