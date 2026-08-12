@@ -167,6 +167,33 @@ async function main() {
       return;
     }
 
+    // Risk:reward filter, applied to whichever levels are actually about to
+    // be published (Gemini's or the formula fallback's) -- logged
+    // unconditionally so the R:R distribution across all candidates is
+    // visible, not just the ones that end up publishing.
+    const risk = stopPrice - entryPrice;
+    const reward = entryPrice - targetPrice;
+    const riskReward = reward / risk;
+    logger.info("computed risk:reward", {
+      symbol,
+      riskReward: Number(riskReward.toFixed(2)),
+      entryPrice,
+      stopPrice,
+      targetPrice,
+    });
+
+    if (riskReward < config.minRiskReward) {
+      logger.info("risk:reward below minimum, skipping publish", {
+        symbol,
+        riskReward: Number(riskReward.toFixed(2)),
+        minRiskReward: config.minRiskReward,
+        entryPrice,
+        stopPrice,
+        targetPrice,
+      });
+      return;
+    }
+
     try {
       const publishResult = await publisher.publishSignal({
         token: baseAsset,

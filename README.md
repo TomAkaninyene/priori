@@ -167,12 +167,14 @@ independent in the same way `service/` is.
    costs money or calls a rate-limited API.
 2. **Conviction (Gemini free tier).** Candidates that clear the screen are sent to a `ConvictionProvider` --
    symbol, current/base/peak price, funding rate, market cap, and the last ~20 candles -- and asked for strict
-   JSON: `conviction` (integer 0-10), `conviction_note`, `pattern_confirmed`, `catalyst_clear`, `stop_price`, and
-   `target_price` (the model's own suggested short levels, placed off the real candle structure rather than a
-   formula). The provider sits behind an interface (`detector/convictionProvider.ts`); Gemini is the only
-   implementation today (`detector/geminiProvider.ts`), selected via `CONVICTION_PROVIDER`. Swapping in Claude or
-   another model means implementing that interface and adding a case to `createConvictionProvider()` -- detection
-   and publishing code doesn't change.
+   JSON: `conviction` (integer 0-10, rating pattern/setup quality), `conviction_note`, `pattern_confirmed`,
+   `catalyst_clear`, `stop_price`, and `target_price` (the model's own suggested short levels, placed off the real
+   candle structure -- swing high, base retracement -- rather than a formula). Risk:reward is not part of the
+   conviction rating itself; it's enforced separately as a hard gate (step 5). The provider sits behind an
+   interface (`detector/convictionProvider.ts`); Gemini is the only implementation today
+   (`detector/geminiProvider.ts`), selected via `CONVICTION_PROVIDER`. Swapping in Claude or another model means
+   implementing that interface and adding a case to `createConvictionProvider()` -- detection and publishing code
+   doesn't change.
 3. **Validation (fail closed).** Whatever a provider returns is treated as untrusted until
    `validateConvictionResponse()` confirms `conviction` is an integer in `[0, 10]` and the other core fields are
    present with the right types -- malformed JSON, a missing field, or an out-of-range score is logged and the
@@ -184,14 +186,19 @@ independent in the same way `service/` is.
    pair that keeps qualifying isn't re-judged every cycle). Any cap hit is logged and that symbol is skipped for
    the cycle -- nothing is queued or retried later. If Gemini itself returns 429, `geminiProvider.ts` retries with
    exponential backoff up to `GEMINI_MAX_RETRIES` before giving up on that symbol for the cycle.
-5. **Publishing.** A candidate with `conviction >= DETECTOR_CONVICTION_THRESHOLD` (default 7) is published via
-   `POST /signal` on the publisher service, direction always short, using Gemini's own `stop_price`/`target_price`
-   from step 3. If those are missing or failed the directional check, the candidate is skipped (fail closed)
-   unless `DETECTOR_FALLBACK_TO_FORMULA_LEVELS=true`, in which case a deterministic formula stands in instead:
-   stop at `DETECTOR_STOP_BUFFER_PCT` above the swing high since the pump started, target at
-   `DETECTOR_TARGET_RR_MULTIPLE` multiples of that risk below entry. A token that was already published within
-   the last 24h is skipped either way (dedup).
-6. **Resolution watcher.** Every cycle, before anything conviction-related, every published-but-unresolved signal
+5. **Risk:reward filter.** Checked after the conviction threshold, on whichever entry/stop/target are about to be
+   published (Gemini's or the formula fallback's): `reward:risk = (entry - target) / (stop - entry)` must clear
+   `DETECTOR_MIN_RR` (default 1.5). The computed ratio is logged for every candidate that reaches this point,
+   whether or not it goes on to publish, so the R:R distribution across candidates is visible in the logs. Below
+   the minimum, the candidate is skipped and the symbol, ratio, and levels that produced it are logged.
+6. **Publishing.** A candidate with `conviction >= DETECTOR_CONVICTION_THRESHOLD` (default 7) that clears the
+   risk:reward filter above is published via `POST /signal` on the publisher service, direction always short,
+   using Gemini's own `stop_price`/`target_price` from step 2. If those are missing or failed the directional
+   check, the candidate is skipped (fail closed) unless `DETECTOR_FALLBACK_TO_FORMULA_LEVELS=true`, in which case
+   a deterministic formula stands in instead: stop at `DETECTOR_STOP_BUFFER_PCT` above the swing high since the
+   pump started, target at `DETECTOR_TARGET_RR_MULTIPLE` multiples of that risk below entry. A token that was
+   already published within the last 24h is skipped either way (dedup).
+7. **Resolution watcher.** Every cycle, before anything conviction-related, every published-but-unresolved signal
    is checked against that cycle's already-fetched prices: target touched first resolves outcome `1`, stop
    touched first resolves outcome `2`, neither before `expiresAt` resolves outcome `3` at the current price. Fully
    automatic, no confirmation step, and it runs even when the day's conviction-call budget is exhausted, since it
@@ -208,9 +215,10 @@ pre-filter and deterministic thresholds, `CONVICTION_PROVIDER`, `GEMINI_API_KEY`
 model -- pinned Flash-Lite versions get retired for new API keys over time, so the alias is used instead of a
 pinned version; check [ai.google.dev/gemini-api/docs/rate-limits](https://ai.google.dev/gemini-api/docs/rate-limits)
 for current numbers before tuning the rate caps below it), `GEMINI_MAX_REQUESTS_PER_MINUTE`, `GEMINI_MAX_REQUESTS_PER_DAY`,
-`GEMINI_SYMBOL_COOLDOWN_MINUTES`, `DETECTOR_CONVICTION_THRESHOLD`, `DETECTOR_FALLBACK_TO_FORMULA_LEVELS` (off by
-default -- see step 5 above), the fallback-only `DETECTOR_STOP_BUFFER_PCT`/`DETECTOR_TARGET_RR_MULTIPLE`, and
-`PRIORI_PUBLISHER_URL` (the publisher service above, which must be running).
+`GEMINI_SYMBOL_COOLDOWN_MINUTES`, `DETECTOR_CONVICTION_THRESHOLD`, `DETECTOR_MIN_RR` (the risk:reward floor from
+step 5, default 1.5), `DETECTOR_FALLBACK_TO_FORMULA_LEVELS` (off by default -- see step 6 above), the
+fallback-only `DETECTOR_STOP_BUFFER_PCT`/`DETECTOR_TARGET_RR_MULTIPLE`, and `PRIORI_PUBLISHER_URL` (the publisher
+service above, which must be running).
 
 ### Running
 

@@ -53,6 +53,10 @@ export interface DetectorConfig {
   stopBufferPct: number;
   targetRrMultiple: number;
   fallbackToFormulaLevels: boolean;
+  // Minimum reward:risk (target distance / stop distance) the final entry/
+  // stop/target must clear to publish, regardless of where the levels came
+  // from. Applied after the conviction threshold check.
+  minRiskReward: number;
   publisherUrl: string;
   publishDedupWindowMs: number;
 }
@@ -80,6 +84,7 @@ export function loadConfig(): DetectorConfig {
     stopBufferPct: num("DETECTOR_STOP_BUFFER_PCT", 0.02),
     targetRrMultiple: num("DETECTOR_TARGET_RR_MULTIPLE", 2),
     fallbackToFormulaLevels: bool("DETECTOR_FALLBACK_TO_FORMULA_LEVELS", false),
+    minRiskReward: num("DETECTOR_MIN_RR", 1.5),
     publisherUrl: str("PRIORI_PUBLISHER_URL", "http://127.0.0.1:3001"),
     publishDedupWindowMs: 24 * 60 * 60 * 1000,
   };
