@@ -424,6 +424,7 @@ async function main() {
       nearestMisses: rejectedByPumpRate.slice(0, 10).map((r) => ({
         symbol: r.symbol,
         riseFallRatePct: `${(r.riseFallRate * 100).toFixed(2)}%`,
+        gapToThresholdPct: `${(r.distance * 100).toFixed(2)}%`,
       })),
     });
 
