@@ -3,7 +3,7 @@ export function HowItWorks() {
     <section className="how">
       <h2 className="how__heading">How this works</h2>
       <p>
-        Every signal is published on-chain before its outcome is known -- entry, stop, and target prices are
+        Every signal is published on-chain before its outcome is known — entry, stop, and target prices are
         recorded at publish time and can never be changed afterward.
       </p>
       <p>

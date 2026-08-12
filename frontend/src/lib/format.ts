@@ -36,6 +36,10 @@ export function outcomeLabel(outcome: number): string {
   }
 }
 
+export function formatUpdatedAt(date: Date): string {
+  return date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
 export type SignalStatus = "Resolved" | "Pending" | "Expired";
 
 export function signalStatus(signal: Signal, nowSeconds: number): SignalStatus {

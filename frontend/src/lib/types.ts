@@ -19,6 +19,11 @@ export interface Signal {
   outcome: number;
   exitPrice: bigint;
   resolvedAt: bigint;
+  // Not part of the on-chain Signal struct -- read separately from
+  // SignalPublished event logs. Empty string if the signal was published
+  // without a note, or if the note couldn't be read (e.g. the RPC doesn't
+  // have logs this old).
+  note: string;
 }
 
 export interface Stats {

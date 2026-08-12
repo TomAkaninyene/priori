@@ -9,6 +9,7 @@ interface LedgerState {
   signals: Signal[];
   stats: Stats | null;
   error: string | null;
+  lastUpdated: Date | null;
 }
 
 interface RawSignal {
@@ -35,7 +36,7 @@ interface RawStats {
   unresolvedExpired: bigint;
 }
 
-function toSignal(raw: RawSignal): Signal {
+function toSignal(raw: RawSignal, notesById: Map<string, string>): Signal {
   return {
     id: raw.id,
     token: raw.token,
@@ -50,7 +51,29 @@ function toSignal(raw: RawSignal): Signal {
     outcome: Number(raw.outcome),
     exitPrice: raw.exitPrice,
     resolvedAt: raw.resolvedAt,
+    note: notesById.get(raw.id.toString()) ?? "",
   };
+}
+
+// Notes only ever exist in SignalPublished's event data (see abi.ts), never
+// in the struct getSignal() returns, so they have to be read from logs
+// separately. This is supplementary, not core ledger data -- if the RPC
+// can't serve the log query (some providers cap eth_getLogs block ranges),
+// the dashboard should still render every signal's real on-chain fields
+// with blank notes rather than fail outright.
+async function fetchNotesById(): Promise<Map<string, string>> {
+  const notesById = new Map<string, string>();
+  try {
+    const events = await signalLedger.queryFilter(signalLedger.filters.SignalPublished());
+    for (const event of events) {
+      if ("args" in event && event.args) {
+        notesById.set((event.args.id as bigint).toString(), event.args.note as string);
+      }
+    }
+  } catch (err) {
+    console.warn("Could not read signal notes from SignalPublished logs:", err);
+  }
+  return notesById;
 }
 
 function extractErrorMessage(err: unknown): string {
@@ -66,7 +89,7 @@ function extractErrorMessage(err: unknown): string {
   return "Failed to load signals from chain";
 }
 
-const initialState: LedgerState = { status: "loading", signals: [], stats: null, error: null };
+const initialState: LedgerState = { status: "loading", signals: [], stats: null, error: null, lastUpdated: null };
 
 export function useSignalLedger() {
   const [state, setState] = useState<LedgerState>(initialState);
@@ -80,10 +103,11 @@ export function useSignalLedger() {
     async function load() {
       setState((prev) => ({ ...prev, status: "loading", error: null }));
       try {
-        const [stats, countRaw] = (await Promise.all([
-          signalLedger.getStats(),
-          signalLedger.getSignalCount(),
-        ])) as [RawStats, bigint];
+        const [stats, countRaw, notesById] = await Promise.all([
+          signalLedger.getStats() as Promise<RawStats>,
+          signalLedger.getSignalCount() as Promise<bigint>,
+          fetchNotesById(),
+        ]);
 
         const count = Number(countRaw);
         // Newest first: ids are sequential starting at 1, so descending id
@@ -96,15 +120,16 @@ export function useSignalLedger() {
         }
         setState({
           status: "ready",
-          signals: rawSignals.map(toSignal),
+          signals: rawSignals.map((raw) => toSignal(raw, notesById)),
           stats,
           error: null,
+          lastUpdated: new Date(),
         });
       } catch (err) {
         if (cancelled) {
           return;
         }
-        setState({ status: "error", signals: [], stats: null, error: extractErrorMessage(err) });
+        setState((prev) => ({ status: "error", signals: [], stats: null, error: extractErrorMessage(err), lastUpdated: prev.lastUpdated }));
       }
     }
 

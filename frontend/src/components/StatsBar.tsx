@@ -46,7 +46,7 @@ export function StatsBar({ stats }: StatsBarProps) {
       <div className="stat stat--wide">
         <span className="stat__label">Unresolved, past expiry</span>
         <span className="stat__value stat__value--loss">{stats.unresolvedExpired.toString()}</span>
-        <span className="stat__note">already counted as a loss above -- stalling can't improve the record</span>
+        <span className="stat__note">already counted as a loss above — stalling can't improve the record</span>
       </div>
     </section>
   );
