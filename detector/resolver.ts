@@ -53,11 +53,21 @@ export async function checkResolutions(
     if (outcome === null) continue;
 
     try {
-      const result = await publisher.resolveSignal({ id: signal.id, outcome, exitPrice: currentPrice });
-      await store.markResolved(signal.id, { outcome, exitPrice: currentPrice, resolvedAt: new Date().toISOString() });
+      const result = await publisher.resolveSignal({
+        id: signal.id,
+        outcome,
+        exitPrice: currentPrice,
+        contractAddress: signal.contractAddress,
+      });
+      await store.markResolved(signal.id, signal.contractAddress, {
+        outcome,
+        exitPrice: currentPrice,
+        resolvedAt: new Date().toISOString(),
+      });
       logger.info("signal resolved", {
         symbol: signal.symbol,
         id: signal.id,
+        contractAddress: signal.contractAddress,
         outcome: outcomeLabel(outcome),
         txHash: result.transactionHash,
       });
@@ -65,6 +75,7 @@ export async function checkResolutions(
       logger.warn("resolve failed, will retry next cycle", {
         symbol: signal.symbol,
         id: signal.id,
+        contractAddress: signal.contractAddress,
         error: (e as Error).message,
       });
     }

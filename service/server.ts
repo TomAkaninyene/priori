@@ -1,7 +1,7 @@
 import express, { type NextFunction, type Request, type Response } from "express";
 import { ethers } from "ethers";
 import { config } from "./config.js";
-import { provider, wallet, signalLedger } from "./contract.js";
+import { provider, wallet, signalLedger, resolveContractFor } from "./contract.js";
 import { PUBLISH_SIGNAL_WITH_EXPIRY, PUBLISH_SIGNAL_DEFAULT_EXPIRY } from "./abi.js";
 import { logger } from "./logger.js";
 import { extractReadableError } from "./errors.js";
@@ -15,6 +15,7 @@ import {
   parseOutcome,
   parseSignalId,
   parseExpiresAt,
+  parseNote,
   validateDirectionalPrices,
   validateResolutionConsistency,
 } from "./validation.js";
@@ -53,9 +54,9 @@ function serializeSignal(signal: SignalStruct) {
   };
 }
 
-async function fetchSignalOrThrow(id: bigint): Promise<SignalStruct> {
+async function fetchSignalOrThrow(contract: ethers.Contract, id: bigint): Promise<SignalStruct> {
   try {
-    return (await signalLedger.getSignal(id)) as unknown as SignalStruct;
+    return (await contract.getSignal(id)) as unknown as SignalStruct;
   } catch (err) {
     throw new NotFoundError(`signal ${id} does not exist`);
   }
@@ -106,7 +107,7 @@ app.get("/stats", async (_req: Request, res: Response) => {
 
 app.get("/signal/:id", async (req: Request, res: Response) => {
   const id = parseSignalId(req.params.id);
-  const signal = await fetchSignalOrThrow(id);
+  const signal = await fetchSignalOrThrow(signalLedger, id);
   res.json(serializeSignal(signal));
 });
 
@@ -121,6 +122,7 @@ app.post("/signal", async (req: Request, res: Response) => {
   const targetPrice = scalePrice(body.targetPrice, "targetPrice");
   validateDirectionalPrices(direction, entryPrice, stopPrice, targetPrice);
   const expiresAt = parseExpiresAt(body.expiresAt);
+  const note = parseNote(body.note);
 
   const attempt = {
     token,
@@ -130,6 +132,7 @@ app.post("/signal", async (req: Request, res: Response) => {
     stopPrice: stopPrice.toString(),
     targetPrice: targetPrice.toString(),
     expiresAt: expiresAt?.toString(),
+    note,
   };
   logger.info("publish attempt", attempt);
 
@@ -144,6 +147,7 @@ app.post("/signal", async (req: Request, res: Response) => {
             stopPrice,
             targetPrice,
             expiresAt,
+            note,
           )
         : await signalLedger[PUBLISH_SIGNAL_DEFAULT_EXPIRY](
             token,
@@ -152,6 +156,7 @@ app.post("/signal", async (req: Request, res: Response) => {
             entryPrice,
             stopPrice,
             targetPrice,
+            note,
           );
     const receipt = await tx.wait();
     const id = await extractPublishedId(receipt);
@@ -169,8 +174,12 @@ app.post("/resolve", async (req: Request, res: Response) => {
   const id = parseSignalId(body.id);
   const outcome = parseOutcome(body.outcome);
   const exitPrice = scalePrice(body.exitPrice, "exitPrice");
+  // Defaults to the primary contract when omitted, so existing callers that
+  // never send contractAddress are unaffected. Only the primary contract or
+  // one of LEGACY_CONTRACT_ADDRESSES is accepted -- see resolveContractFor.
+  const { contract, address: contractAddress, isLegacy } = resolveContractFor(body.contractAddress);
 
-  const signal = await fetchSignalOrThrow(id);
+  const signal = await fetchSignalOrThrow(contract, id);
   if (signal.resolved) {
     throw new ApiError(`signal ${id} is already resolved`, 409);
   }
@@ -182,11 +191,11 @@ app.post("/resolve", async (req: Request, res: Response) => {
     signal.targetPrice,
   );
 
-  const attempt = { id: id.toString(), outcome, exitPrice: exitPrice.toString() };
+  const attempt = { id: id.toString(), outcome, exitPrice: exitPrice.toString(), contractAddress, isLegacy };
   logger.info("resolve attempt", attempt);
 
   try {
-    const tx = await signalLedger.resolveSignal(id, outcome, exitPrice);
+    const tx = await contract.resolveSignal(id, outcome, exitPrice);
     await tx.wait();
     logger.info("resolve succeeded", { ...attempt, txHash: tx.hash });
     res.json({ transactionHash: tx.hash, id: id.toString() });
@@ -218,6 +227,7 @@ app.listen(config.port, "127.0.0.1", () => {
   logger.info("publisher service listening", {
     address: `http://127.0.0.1:${config.port}`,
     contractAddress: config.contractAddress,
+    legacyContractAddresses: config.legacyContractAddresses,
     chainId: config.chainId,
     wallet: wallet.address,
   });

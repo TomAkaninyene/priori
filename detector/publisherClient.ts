@@ -26,6 +26,11 @@ export interface OnChainSignal {
   [key: string]: unknown;
 }
 
+export interface HealthInfo {
+  contractAddress: string;
+  [key: string]: unknown;
+}
+
 export class PublisherClient {
   constructor(private readonly baseUrl: string) {}
 
@@ -51,6 +56,7 @@ export class PublisherClient {
     entryPrice: number;
     stopPrice: number;
     targetPrice: number;
+    note?: string;
   }): Promise<PublishResult> {
     return this.postJson<PublishResult>("/signal", {
       token: params.token,
@@ -59,15 +65,26 @@ export class PublisherClient {
       entryPrice: toApiPriceString(params.entryPrice),
       stopPrice: toApiPriceString(params.stopPrice),
       targetPrice: toApiPriceString(params.targetPrice),
+      note: params.note,
     });
   }
 
   // outcome: 1 = target hit, 2 = stop hit, 3 = expired unresolved.
-  async resolveSignal(params: { id: string; outcome: 1 | 2 | 3; exitPrice: number }): Promise<PublishResult> {
+  // contractAddress is optional -- omit it to resolve against the
+  // publisher's primary contract, or pass a legacy address (one of the
+  // service's configured LEGACY_CONTRACT_ADDRESSES) to resolve a signal
+  // published before a redeploy.
+  async resolveSignal(params: {
+    id: string;
+    outcome: 1 | 2 | 3;
+    exitPrice: number;
+    contractAddress?: string;
+  }): Promise<PublishResult> {
     return this.postJson<PublishResult>("/resolve", {
       id: params.id,
       outcome: params.outcome,
       exitPrice: toApiPriceString(params.exitPrice),
+      contractAddress: params.contractAddress,
     });
   }
 
@@ -79,5 +96,15 @@ export class PublisherClient {
       throw new Error(`Priori /signal/${id} failed: ${res.status} ${err.error ?? JSON.stringify(data)}`);
     }
     return data as OnChainSignal;
+  }
+
+  async getHealth(): Promise<HealthInfo> {
+    const res = await fetch(`${this.baseUrl}/health`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = data as { error?: string };
+      throw new Error(`Priori /health failed: ${res.status} ${err.error ?? JSON.stringify(data)}`);
+    }
+    return data as HealthInfo;
   }
 }

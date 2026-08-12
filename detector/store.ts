@@ -8,6 +8,12 @@ import { withFileLock } from "./fileLock.js";
 
 export interface StoredSignal {
   id: string;
+  // Each SignalLedger deployment has its own independent, auto-incrementing
+  // id sequence, so `id` alone is only unique per contract -- a signal is
+  // only ever uniquely identified by (contractAddress, id) together once
+  // more than one deployment is in play (see resolver.ts / config.ts
+  // LEGACY_CONTRACT_ADDRESSES).
+  contractAddress: string;
   symbol: string;
   token: string;
   direction: 1 | 2;
@@ -68,11 +74,14 @@ export class SignalStore {
 
   async markResolved(
     id: string,
+    contractAddress: string,
     { outcome, exitPrice, resolvedAt }: { outcome: 1 | 2 | 3; exitPrice: number; resolvedAt: string },
   ): Promise<void> {
     return withFileLock(this.lockFile, async () => {
       const list = await this.load();
-      const match = list.find((s) => s.id === id);
+      // Matched on (id, contractAddress) together -- id alone isn't unique
+      // once a legacy contract's signals share the store with the primary's.
+      const match = list.find((s) => s.id === id && s.contractAddress === contractAddress);
       if (!match) return;
       match.resolved = true;
       match.outcome = outcome;

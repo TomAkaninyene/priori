@@ -24,6 +24,18 @@ const CANDLE_INTERVAL = "Min15";
 const CANDLE_LOOKBACK = 96;
 const CONVICTION_CANDLE_WINDOW = 20;
 const INTER_SYMBOL_DELAY_MS = 250;
+// Mirrors SignalLedger.MAX_NOTE_LENGTH -- the contract counts UTF-8 bytes,
+// not JS string length, so truncation is checked both ways rather than
+// failing the publish over a rare multi-byte edge case.
+const MAX_NOTE_LENGTH = 500;
+
+function truncateNote(note: string): string {
+  let truncated = note.length > MAX_NOTE_LENGTH ? note.slice(0, MAX_NOTE_LENGTH) : note;
+  while (Buffer.byteLength(truncated, "utf8") > MAX_NOTE_LENGTH) {
+    truncated = truncated.slice(0, -1);
+  }
+  return truncated;
+}
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
@@ -43,6 +55,15 @@ async function main() {
   });
   const publisher = new PublisherClient(config.publisherUrl);
   const store = new SignalStore(STATE_DIR);
+
+  // New signals are only ever published to the publisher's primary
+  // contract -- fetched once at startup (rather than hardcoded here) so
+  // this never drifts from whatever CONTRACT_ADDRESS the service is
+  // actually configured with. Stored alongside each signal so the resolver
+  // knows which contract to target later, the same as it does for
+  // legacy-contract signals (see resolver.ts).
+  const primaryContractAddress = (await publisher.getHealth()).contractAddress;
+  logger.info("resolved primary contract from publisher", { contractAddress: primaryContractAddress });
 
   async function processCandidate(ticker: Ticker, btcStrongUptrend: boolean): Promise<void> {
     const symbol = ticker.symbol;
@@ -202,6 +223,7 @@ async function main() {
         entryPrice,
         stopPrice,
         targetPrice,
+        note: truncateNote(result.convictionNote),
       });
 
       let expiresAt = Math.floor(Date.now() / 1000) + 24 * 60 * 60;
@@ -218,6 +240,7 @@ async function main() {
 
       await store.recordPublished({
         id: publishResult.id,
+        contractAddress: primaryContractAddress,
         symbol,
         token: baseAsset,
         direction: 1,

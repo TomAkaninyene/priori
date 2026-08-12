@@ -6,6 +6,11 @@ export interface ServiceConfig {
   rpcUrl: string;
   privateKey: string;
   port: number;
+  // Old contract deployments that still have unresolved signals. /resolve
+  // accepts an optional contractAddress and will write to one of these
+  // instead of the primary contractAddress above -- but /signal (publish)
+  // never targets these; new signals only ever go to the primary contract.
+  legacyContractAddresses: string[];
 }
 
 function requireEnv(name: string): string {
@@ -22,6 +27,10 @@ function loadConfig(): ServiceConfig {
   const rpcUrl = requireEnv("RPC_URL");
   const privateKey = requireEnv("PRIVATE_KEY");
   const port = Number(process.env.PORT ?? "3001");
+  const legacyContractAddresses = (process.env.LEGACY_CONTRACT_ADDRESSES ?? "")
+    .split(",")
+    .map((address) => address.trim())
+    .filter((address) => address.length > 0);
 
   if (!Number.isInteger(chainId) || chainId <= 0) {
     throw new Error(`Invalid CHAIN_ID: ${process.env.CHAIN_ID}`);
@@ -30,7 +39,7 @@ function loadConfig(): ServiceConfig {
     throw new Error(`Invalid PORT: ${process.env.PORT}`);
   }
 
-  return { contractAddress, chainId, rpcUrl, privateKey, port };
+  return { contractAddress, chainId, rpcUrl, privateKey, port, legacyContractAddresses };
 }
 
 export const config = loadConfig();

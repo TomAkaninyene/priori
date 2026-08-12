@@ -84,7 +84,7 @@ The service binds to `127.0.0.1` only — it is never reachable from outside the
 
 All prices (`entryPrice`, `stopPrice`, `targetPrice`, `exitPrice`) are sent as plain decimals in the request body; the service scales them by `1e8` before submitting to the contract. Response bodies return the raw on-chain (already-scaled) values as strings, since they can exceed `Number.MAX_SAFE_INTEGER`.
 
-Before submitting a transaction, the service replicates the contract's `require()` checks locally — direction/score bounds, stop/target price ordering, and (for `/resolve`) exit-price consistency with the claimed outcome — so invalid input returns a `400` immediately instead of reverting on-chain and burning gas.
+Before submitting a transaction, the service replicates the contract's `require()` checks locally — direction/score bounds, stop/target price ordering, note length, and (for `/resolve`) exit-price consistency with the claimed outcome — so invalid input returns a `400` immediately instead of reverting on-chain and burning gas.
 
 #### `GET /health`
 
@@ -96,7 +96,7 @@ curl http://127.0.0.1:3001/health
 
 #### `POST /signal`
 
-Publishes a new signal. `expiresAt` is optional (a Unix timestamp in seconds); if omitted, the contract defaults it to 24 hours from publish time. Returns the transaction hash and the assigned signal id.
+Publishes a new signal. `expiresAt` is optional (a Unix timestamp in seconds); if omitted, the contract defaults it to 24 hours from publish time. `note` is optional (defaults to an empty string), capped at 500 bytes (UTF-8) to match the contract's `MAX_NOTE_LENGTH` -- it's emitted in the `SignalPublished` event only and is never stored in the signal's on-chain record. Returns the transaction hash and the assigned signal id.
 
 ```shell
 curl -X POST http://127.0.0.1:3001/signal \
@@ -107,7 +107,8 @@ curl -X POST http://127.0.0.1:3001/signal \
     "score": 7,
     "entryPrice": 3000.5,
     "stopPrice": 2900.25,
-    "targetPrice": 3200.75
+    "targetPrice": 3200.75,
+    "note": "Clean breakout above range high on rising volume"
   }'
 ```
 
@@ -197,7 +198,9 @@ independent in the same way `service/` is.
    check, the candidate is skipped (fail closed) unless `DETECTOR_FALLBACK_TO_FORMULA_LEVELS=true`, in which case
    a deterministic formula stands in instead: stop at `DETECTOR_STOP_BUFFER_PCT` above the swing high since the
    pump started, target at `DETECTOR_TARGET_RR_MULTIPLE` multiples of that risk below entry. A token that was
-   already published within the last 24h is skipped either way (dedup).
+   already published within the last 24h is skipped either way (dedup). Gemini's `conviction_note` is sent as the
+   signal's `note` (truncated to the contract's 500-byte `MAX_NOTE_LENGTH` rather than failing the publish) --
+   the note is emitted in the `SignalPublished` event only, never stored on-chain in the signal's own record.
 7. **Resolution watcher.** Every cycle, before anything conviction-related, every published-but-unresolved signal
    is checked against that cycle's already-fetched prices: target touched first resolves outcome `1`, stop
    touched first resolves outcome `2`, neither before `expiresAt` resolves outcome `3` at the current price. Fully

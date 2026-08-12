@@ -18,6 +18,10 @@ export class NotFoundError extends ApiError {
 const DIRECTION_SHORT = 1;
 const DIRECTION_LONG = 2;
 
+// Mirrors SignalLedger.MAX_NOTE_LENGTH -- kept in sync by hand, same as the
+// rest of this file mirrors the contract's other require() checks.
+const MAX_NOTE_LENGTH = 500;
+
 const DECIMAL_PATTERN = /^\d+(\.\d+)?$/;
 
 // Prices arrive as plain decimals (e.g. 3000.5) and are scaled by 1e8 to
@@ -74,6 +78,24 @@ export function parseOutcome(value: unknown): 1 | 2 | 3 {
     throw new ApiError("outcome must be 1 (target hit), 2 (stop hit), or 3 (expired)");
   }
   return outcome;
+}
+
+// note is optional; missing/undefined publishes with an empty note. Length
+// is checked in UTF-8 bytes (not JS string length) to match Solidity's
+// bytes(note).length exactly, so this fails locally instead of reverting
+// on-chain and burning gas on a note that's fine by JS string length but
+// too long once multi-byte characters are UTF-8 encoded.
+export function parseNote(value: unknown): string {
+  if (value === undefined || value === null) {
+    return "";
+  }
+  if (typeof value !== "string") {
+    throw new ApiError("note must be a string");
+  }
+  if (Buffer.byteLength(value, "utf8") > MAX_NOTE_LENGTH) {
+    throw new ApiError(`note must be ${MAX_NOTE_LENGTH} bytes (UTF-8) or fewer`);
+  }
+  return value;
 }
 
 export function parseSignalId(value: unknown): bigint {
