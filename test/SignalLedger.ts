@@ -1,5 +1,6 @@
 import { expect } from "chai";
 import { network } from "hardhat";
+import { anyUint } from "@nomicfoundation/hardhat-ethers-chai-matchers/withArgs";
 
 const { ethers, networkHelpers } = await network.create();
 
@@ -13,9 +14,9 @@ const OUTCOME_EXPIRED = 3;
 // publishSignal is overloaded; ethers/TypeChain require the full signature
 // to disambiguate which overload to call.
 const PUBLISH_SIGNAL =
-  "publishSignal(string,uint8,uint8,uint256,uint256,uint256,uint256)" as const;
+  "publishSignal(string,uint8,uint8,uint256,uint256,uint256,uint256,string)" as const;
 const PUBLISH_SIGNAL_DEFAULT =
-  "publishSignal(string,uint8,uint8,uint256,uint256,uint256)" as const;
+  "publishSignal(string,uint8,uint8,uint256,uint256,uint256,string)" as const;
 
 // Valid price triples satisfying the directional stop/target validation.
 const LONG_ENTRY = 200n;
@@ -24,6 +25,8 @@ const LONG_TARGET = 300n;
 const SHORT_ENTRY = 200n;
 const SHORT_STOP = 300n;
 const SHORT_TARGET = 100n;
+
+const NO_NOTE = "";
 
 async function deploySignalLedgerFixture() {
   const [owner, other] = await ethers.getSigners();
@@ -46,9 +49,23 @@ describe("SignalLedger", function () {
       290_000_000_000n,
       320_000_000_000n,
       expiresAt,
+      "Clean breakout, strong volume",
     );
 
-    await expect(tx).to.emit(signalLedger, "SignalPublished");
+    await expect(tx)
+      .to.emit(signalLedger, "SignalPublished")
+      .withArgs(
+        1n,
+        "ETH",
+        DIRECTION_LONG,
+        7,
+        300_000_000_000n,
+        290_000_000_000n,
+        320_000_000_000n,
+        anyUint,
+        expiresAt,
+        "Clean breakout, strong volume",
+      );
 
     const signal = await signalLedger.getSignal(1n);
     expect(signal.id).to.equal(1n);
@@ -64,6 +81,11 @@ describe("SignalLedger", function () {
     expect(signal.exitPrice).to.equal(0n);
     expect(signal.resolvedAt).to.equal(0n);
     expect(signal.publishedAt).to.be.greaterThan(0n);
+    // The note is not part of the Signal struct -- it only ever exists in
+    // the SignalPublished event. TypeChain's generated return type for
+    // getSignal() has no `note` field, so there's nothing to assert at
+    // runtime here beyond what the type system already guarantees; the
+    // "emits the note via SignalPublished" test below covers the event side.
   });
 
   it("reverts when a non-owner calls publishSignal", async function () {
@@ -73,7 +95,7 @@ describe("SignalLedger", function () {
     await expect(
       signalLedger
         .connect(other)
-        [PUBLISH_SIGNAL]("ETH", DIRECTION_LONG, 5, 1n, 1n, 1n, now + 3600n),
+        [PUBLISH_SIGNAL]("ETH", DIRECTION_LONG, 5, 1n, 1n, 1n, now + 3600n, NO_NOTE),
     ).to.be.revertedWith("SignalLedger: caller is not the owner");
   });
 
@@ -89,6 +111,7 @@ describe("SignalLedger", function () {
       LONG_STOP,
       LONG_TARGET,
       now + 3600n,
+      NO_NOTE,
     );
 
     await expect(
@@ -106,6 +129,7 @@ describe("SignalLedger", function () {
       SHORT_ENTRY,
       SHORT_STOP,
       SHORT_TARGET,
+      NO_NOTE,
     );
     const receipt = await tx.wait();
     const block = await ethers.provider.getBlock(receipt!.blockNumber);
@@ -113,6 +137,73 @@ describe("SignalLedger", function () {
 
     const signal = await signalLedger.getSignal(1n);
     expect(signal.expiresAt).to.equal(BigInt(block!.timestamp) + defaultExpiryWindow);
+  });
+
+  it("emits the note via SignalPublished without storing it on the signal", async function () {
+    const { signalLedger } = await networkHelpers.loadFixture(deploySignalLedgerFixture);
+    const now = BigInt(await networkHelpers.time.latest());
+
+    const tx = await signalLedger[PUBLISH_SIGNAL_DEFAULT](
+      "BTC",
+      DIRECTION_SHORT,
+      4,
+      SHORT_ENTRY,
+      SHORT_STOP,
+      SHORT_TARGET,
+      "rolled over hard, thin volume on the bounce",
+    );
+    const receipt = await tx.wait();
+    const event = receipt!.logs
+      .map((log) => {
+        try {
+          return signalLedger.interface.parseLog(log);
+        } catch {
+          return null;
+        }
+      })
+      .find((parsed) => parsed?.name === "SignalPublished");
+
+    expect(event?.args.note).to.equal("rolled over hard, thin volume on the bounce");
+  });
+
+  it("allows a note at exactly MAX_NOTE_LENGTH", async function () {
+    const { signalLedger } = await networkHelpers.loadFixture(deploySignalLedgerFixture);
+    const now = BigInt(await networkHelpers.time.latest());
+    const maxLength = await signalLedger.MAX_NOTE_LENGTH();
+    const note = "x".repeat(Number(maxLength));
+
+    await expect(
+      signalLedger[PUBLISH_SIGNAL](
+        "ETH",
+        DIRECTION_LONG,
+        5,
+        LONG_ENTRY,
+        LONG_STOP,
+        LONG_TARGET,
+        now + 3600n,
+        note,
+      ),
+    ).to.not.revert(ethers);
+  });
+
+  it("reverts when a note exceeds MAX_NOTE_LENGTH", async function () {
+    const { signalLedger } = await networkHelpers.loadFixture(deploySignalLedgerFixture);
+    const now = BigInt(await networkHelpers.time.latest());
+    const maxLength = await signalLedger.MAX_NOTE_LENGTH();
+    const note = "x".repeat(Number(maxLength) + 1);
+
+    await expect(
+      signalLedger[PUBLISH_SIGNAL](
+        "ETH",
+        DIRECTION_LONG,
+        5,
+        LONG_ENTRY,
+        LONG_STOP,
+        LONG_TARGET,
+        now + 3600n,
+        note,
+      ),
+    ).to.be.revertedWith("SignalLedger: note exceeds max length");
   });
 
   it("reverts when resolving an already-resolved signal", async function () {
@@ -127,6 +218,7 @@ describe("SignalLedger", function () {
       LONG_STOP,
       LONG_TARGET,
       now + 3600n,
+      NO_NOTE,
     );
     await signalLedger.resolveSignal(1n, OUTCOME_TARGET_HIT, LONG_TARGET);
 
@@ -148,7 +240,7 @@ describe("SignalLedger", function () {
     const now = BigInt(await networkHelpers.time.latest());
 
     await expect(
-      signalLedger[PUBLISH_SIGNAL]("ETH", 3, 5, 1n, 1n, 1n, now + 3600n),
+      signalLedger[PUBLISH_SIGNAL]("ETH", 3, 5, 1n, 1n, 1n, now + 3600n, NO_NOTE),
     ).to.be.revertedWith("SignalLedger: invalid direction");
   });
 
@@ -157,7 +249,7 @@ describe("SignalLedger", function () {
     const now = BigInt(await networkHelpers.time.latest());
 
     await expect(
-      signalLedger[PUBLISH_SIGNAL]("ETH", DIRECTION_LONG, 11, 1n, 1n, 1n, now + 3600n),
+      signalLedger[PUBLISH_SIGNAL]("ETH", DIRECTION_LONG, 11, 1n, 1n, 1n, now + 3600n, NO_NOTE),
     ).to.be.revertedWith("SignalLedger: score above 10");
   });
 
@@ -173,6 +265,7 @@ describe("SignalLedger", function () {
       LONG_STOP,
       LONG_TARGET,
       now + 3600n,
+      NO_NOTE,
     );
 
     await expect(signalLedger.resolveSignal(1n, 4, 1n)).to.be.revertedWith(
@@ -180,18 +273,69 @@ describe("SignalLedger", function () {
     );
   });
 
-  it("getStats tallies wins and losses correctly", async function () {
+  it("reverts when declaring a signal expired before its expiresAt", async function () {
     const { signalLedger } = await networkHelpers.loadFixture(deploySignalLedgerFixture);
     const now = BigInt(await networkHelpers.time.latest());
     const expiresAt = now + 3600n;
 
-    await signalLedger[PUBLISH_SIGNAL]("A", DIRECTION_LONG, 5, LONG_ENTRY, LONG_STOP, LONG_TARGET, expiresAt);
-    await signalLedger[PUBLISH_SIGNAL]("B", DIRECTION_LONG, 5, LONG_ENTRY, LONG_STOP, LONG_TARGET, expiresAt);
-    await signalLedger[PUBLISH_SIGNAL]("C", DIRECTION_LONG, 5, LONG_ENTRY, LONG_STOP, LONG_TARGET, expiresAt);
-    await signalLedger[PUBLISH_SIGNAL]("D", DIRECTION_LONG, 5, LONG_ENTRY, LONG_STOP, LONG_TARGET, expiresAt);
+    await signalLedger[PUBLISH_SIGNAL](
+      "ETH",
+      DIRECTION_LONG,
+      5,
+      LONG_ENTRY,
+      LONG_STOP,
+      LONG_TARGET,
+      expiresAt,
+      NO_NOTE,
+    );
+
+    // Still well before expiresAt -- must not be resolvable as expired yet.
+    await expect(
+      signalLedger.resolveSignal(1n, OUTCOME_EXPIRED, 1n),
+    ).to.be.revertedWith("SignalLedger: not yet expired");
+  });
+
+  it("allows declaring a signal expired once its expiresAt has passed", async function () {
+    const { signalLedger } = await networkHelpers.loadFixture(deploySignalLedgerFixture);
+    const now = BigInt(await networkHelpers.time.latest());
+    const expiresAt = now + 3600n;
+
+    await signalLedger[PUBLISH_SIGNAL](
+      "ETH",
+      DIRECTION_LONG,
+      5,
+      LONG_ENTRY,
+      LONG_STOP,
+      LONG_TARGET,
+      expiresAt,
+      NO_NOTE,
+    );
+
+    await networkHelpers.time.increaseTo(expiresAt);
+
+    await expect(signalLedger.resolveSignal(1n, OUTCOME_EXPIRED, 1n)).to.not.revert(ethers);
+    const signal = await signalLedger.getSignal(1n);
+    expect(signal.resolved).to.equal(true);
+    expect(signal.outcome).to.equal(OUTCOME_EXPIRED);
+  });
+
+  it("getStats tallies wins and losses correctly", async function () {
+    const { signalLedger } = await networkHelpers.loadFixture(deploySignalLedgerFixture);
+    const now = BigInt(await networkHelpers.time.latest());
+    const expiresAt = now + 3600n;
+    // Signal 4 expires well after the other three, so advancing time enough
+    // to legally resolve signal 3 as expired doesn't also push signal 4
+    // past its own expiry.
+    const laterExpiresAt = expiresAt + 3600n;
+
+    await signalLedger[PUBLISH_SIGNAL]("A", DIRECTION_LONG, 5, LONG_ENTRY, LONG_STOP, LONG_TARGET, expiresAt, NO_NOTE);
+    await signalLedger[PUBLISH_SIGNAL]("B", DIRECTION_LONG, 5, LONG_ENTRY, LONG_STOP, LONG_TARGET, expiresAt, NO_NOTE);
+    await signalLedger[PUBLISH_SIGNAL]("C", DIRECTION_LONG, 5, LONG_ENTRY, LONG_STOP, LONG_TARGET, expiresAt, NO_NOTE);
+    await signalLedger[PUBLISH_SIGNAL]("D", DIRECTION_LONG, 5, LONG_ENTRY, LONG_STOP, LONG_TARGET, laterExpiresAt, NO_NOTE);
 
     await signalLedger.resolveSignal(1n, OUTCOME_TARGET_HIT, LONG_TARGET);
     await signalLedger.resolveSignal(2n, OUTCOME_STOP_HIT, LONG_STOP);
+    await networkHelpers.time.increaseTo(expiresAt);
     await signalLedger.resolveSignal(3n, OUTCOME_EXPIRED, 1n);
     // Signal 4 is left unresolved, but has not expired yet.
 
@@ -216,6 +360,7 @@ describe("SignalLedger", function () {
       LONG_STOP,
       LONG_TARGET,
       expiresAt,
+      NO_NOTE,
     );
 
     await networkHelpers.time.increaseTo(expiresAt + 1n);
@@ -241,6 +386,7 @@ describe("SignalLedger", function () {
         SHORT_ENTRY, // stopPrice == entryPrice, not above it
         SHORT_TARGET,
         now + 3600n,
+        NO_NOTE,
       ),
     ).to.be.revertedWith("SignalLedger: short stopPrice must be above entryPrice");
   });
@@ -258,6 +404,7 @@ describe("SignalLedger", function () {
         SHORT_STOP,
         SHORT_ENTRY, // targetPrice == entryPrice, not below it
         now + 3600n,
+        NO_NOTE,
       ),
     ).to.be.revertedWith("SignalLedger: short targetPrice must be below entryPrice");
   });
@@ -275,6 +422,7 @@ describe("SignalLedger", function () {
         LONG_ENTRY, // stopPrice == entryPrice, not below it
         LONG_TARGET,
         now + 3600n,
+        NO_NOTE,
       ),
     ).to.be.revertedWith("SignalLedger: long stopPrice must be below entryPrice");
   });
@@ -292,6 +440,7 @@ describe("SignalLedger", function () {
         LONG_STOP,
         LONG_ENTRY, // targetPrice == entryPrice, not above it
         now + 3600n,
+        NO_NOTE,
       ),
     ).to.be.revertedWith("SignalLedger: long targetPrice must be above entryPrice");
   });
@@ -308,6 +457,7 @@ describe("SignalLedger", function () {
       SHORT_STOP,
       SHORT_TARGET,
       now + 3600n,
+      NO_NOTE,
     );
 
     await expect(
@@ -327,6 +477,7 @@ describe("SignalLedger", function () {
       SHORT_STOP,
       SHORT_TARGET,
       now + 3600n,
+      NO_NOTE,
     );
 
     await expect(
@@ -346,6 +497,7 @@ describe("SignalLedger", function () {
       LONG_STOP,
       LONG_TARGET,
       now + 3600n,
+      NO_NOTE,
     );
 
     await expect(
@@ -365,6 +517,7 @@ describe("SignalLedger", function () {
       LONG_STOP,
       LONG_TARGET,
       now + 3600n,
+      NO_NOTE,
     );
 
     await expect(

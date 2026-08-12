@@ -26,6 +26,12 @@ contract SignalLedger {
 
   uint256 public constant DEFAULT_EXPIRY_WINDOW = 24 hours;
 
+  // Notes are emitted in SignalPublished only, never stored in the Signal
+  // struct -- readable forever from logs without paying storage gas for
+  // free-text. This bound keeps a single publish call's calldata/event cost
+  // predictable regardless of how much a caller tries to write.
+  uint256 public constant MAX_NOTE_LENGTH = 500;
+
   address public immutable owner;
 
   uint256 public signalCount;
@@ -41,7 +47,8 @@ contract SignalLedger {
     uint256 stopPrice,
     uint256 targetPrice,
     uint256 publishedAt,
-    uint256 expiresAt
+    uint256 expiresAt,
+    string note
   );
 
   event SignalResolved(
@@ -67,9 +74,10 @@ contract SignalLedger {
     uint256 entryPrice,
     uint256 stopPrice,
     uint256 targetPrice,
-    uint256 expiresAt
+    uint256 expiresAt,
+    string calldata note
   ) external onlyOwner returns (uint256 id) {
-    id = _publish(token, direction, score, entryPrice, stopPrice, targetPrice, expiresAt);
+    id = _publish(token, direction, score, entryPrice, stopPrice, targetPrice, expiresAt, note);
   }
 
   function publishSignal(
@@ -78,7 +86,8 @@ contract SignalLedger {
     uint8 score,
     uint256 entryPrice,
     uint256 stopPrice,
-    uint256 targetPrice
+    uint256 targetPrice,
+    string calldata note
   ) external onlyOwner returns (uint256 id) {
     id = _publish(
       token,
@@ -87,7 +96,8 @@ contract SignalLedger {
       entryPrice,
       stopPrice,
       targetPrice,
-      block.timestamp + DEFAULT_EXPIRY_WINDOW
+      block.timestamp + DEFAULT_EXPIRY_WINDOW,
+      note
     );
   }
 
@@ -129,6 +139,13 @@ contract SignalLedger {
           "SignalLedger: exitPrice does not confirm stop hit"
         );
       }
+    } else if (outcome == 3) {
+      // A signal cannot be declared expired before its expiry. Without this
+      // check the owner could mark a still-live signal "expired" early,
+      // letting it skip ever being tested against its real stop/target
+      // levels -- a backdoor around the append-only, judged-on-its-merits
+      // design of the ledger.
+      require(block.timestamp >= signal.expiresAt, "SignalLedger: not yet expired");
     }
 
     signal.resolved = true;
@@ -191,11 +208,13 @@ contract SignalLedger {
     uint256 entryPrice,
     uint256 stopPrice,
     uint256 targetPrice,
-    uint256 expiresAt
+    uint256 expiresAt,
+    string calldata note
   ) private returns (uint256 id) {
     require(expiresAt > block.timestamp, "SignalLedger: expiresAt not in future");
     require(direction == 1 || direction == 2, "SignalLedger: invalid direction");
     require(score <= 10, "SignalLedger: score above 10");
+    require(bytes(note).length <= MAX_NOTE_LENGTH, "SignalLedger: note exceeds max length");
 
     if (direction == 1) {
       require(stopPrice > entryPrice, "SignalLedger: short stopPrice must be above entryPrice");
@@ -233,7 +252,8 @@ contract SignalLedger {
       stopPrice,
       targetPrice,
       publishedAt,
-      expiresAt
+      expiresAt,
+      note
     );
   }
 }
