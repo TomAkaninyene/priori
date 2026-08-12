@@ -107,7 +107,11 @@ app.get("/stats", async (_req: Request, res: Response) => {
 
 app.get("/signal/:id", async (req: Request, res: Response) => {
   const id = parseSignalId(req.params.id);
-  const signal = await fetchSignalOrThrow(signalLedger, id);
+  // Same whitelist as /resolve: defaults to the primary contract when
+  // omitted, or accepts one of LEGACY_CONTRACT_ADDRESSES -- see
+  // resolveContractFor.
+  const { contract } = resolveContractFor(req.query.contractAddress);
+  const signal = await fetchSignalOrThrow(contract, id);
   res.json(serializeSignal(signal));
 });
 

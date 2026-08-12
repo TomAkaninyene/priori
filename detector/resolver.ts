@@ -1,17 +1,41 @@
 // Resolution watcher for signals this detector has published. Runs once
-// per cycle against whatever tickers that cycle already fetched (no extra
-// API calls), and does so unconditionally -- it must keep running even
-// when the conviction budget for the day is exhausted, since it only uses
-// already-free price data. Fully automatic, no confirmation step.
+// per cycle against whatever tickers that cycle already fetched, and does
+// so unconditionally -- it must keep running even when the conviction
+// budget for the day is exhausted, since target/stop checks only use
+// already-free price data. The one exception is a signal that appears
+// expired: that's confirmed with a live publisher read (see
+// fetchExpiresAt) before resolving, since it's a consequential on-chain
+// write. Fully automatic, no confirmation step.
 import type { Ticker } from "./mexcClient.js";
 import type { PublisherClient } from "./publisherClient.js";
-import type { SignalStore } from "./store.js";
+import type { SignalStore, StoredSignal } from "./store.js";
 import { logger } from "./logger.js";
 
 function outcomeLabel(outcome: 1 | 2 | 3): string {
   if (outcome === 1) return "target hit";
   if (outcome === 2) return "stop hit";
   return "expired unresolved";
+}
+
+// The stored expiresAt can be a 24h estimate (see index.ts) if the
+// post-publish fetch-back failed, so before actually resolving a signal as
+// expired -- a consequential, on-chain write -- confirm against the real
+// expiresAt from the signal's own contract. Falls back to the stored value,
+// loudly, if the read itself fails (e.g. publisher unreachable).
+async function fetchExpiresAt(signal: StoredSignal, publisher: PublisherClient): Promise<number> {
+  try {
+    const onChain = await publisher.fetchSignal(signal.id, signal.contractAddress);
+    return Number(onChain.expiresAt);
+  } catch (e) {
+    logger.warn("could not fetch on-chain expiresAt, falling back to stored estimate", {
+      symbol: signal.symbol,
+      id: signal.id,
+      contractAddress: signal.contractAddress,
+      storedExpiresAt: signal.expiresAt,
+      error: (e as Error).message,
+    });
+    return signal.expiresAt;
+  }
 }
 
 export async function checkResolutions(
@@ -47,7 +71,13 @@ export async function checkResolutions(
     } else if (stopTouched) {
       outcome = 2;
     } else if (nowSeconds >= signal.expiresAt) {
-      outcome = 3;
+      // Stored value says expired -- confirm against the chain before
+      // committing to that outcome, since the stored value may itself be a
+      // 24h estimate rather than the real expiresAt.
+      const onChainExpiresAt = await fetchExpiresAt(signal, publisher);
+      if (nowSeconds >= onChainExpiresAt) {
+        outcome = 3;
+      }
     }
 
     if (outcome === null) continue;

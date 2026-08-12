@@ -88,8 +88,13 @@ export class PublisherClient {
     });
   }
 
-  async fetchSignal(id: string): Promise<OnChainSignal> {
-    const res = await fetch(`${this.baseUrl}/signal/${id}`);
+  // contractAddress is optional -- omit it to read from the publisher's
+  // primary contract, or pass a legacy address (one of the service's
+  // configured LEGACY_CONTRACT_ADDRESSES) to read a signal published before
+  // a redeploy.
+  async fetchSignal(id: string, contractAddress?: string): Promise<OnChainSignal> {
+    const query = contractAddress ? `?contractAddress=${encodeURIComponent(contractAddress)}` : "";
+    const res = await fetch(`${this.baseUrl}/signal/${id}${query}`);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       const err = data as { error?: string };
