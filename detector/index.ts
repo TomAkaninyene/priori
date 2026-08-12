@@ -11,7 +11,14 @@ import { loadConfig } from "./config.js";
 import { logger } from "./logger.js";
 import { createMexcClient, type Ticker } from "./mexcClient.js";
 import { getMarketCapUsd } from "./coingecko.js";
-import { scoreDeterministicChecklist, isStrongUptrend } from "./checklist.js";
+import {
+  scoreDeterministicChecklist,
+  isStrongUptrend,
+  PUMP_THRESHOLD,
+  MAX_PUMP_AGE_HOURS,
+  MARKET_CAP_CEILING,
+  type DeterministicChecklist,
+} from "./checklist.js";
 import { createConvictionProvider, validateConvictionResponse, type ConvictionSetup } from "./convictionProvider.js";
 import { ConvictionRateLimiter } from "./rateLimiter.js";
 import { PublisherClient } from "./publisherClient.js";
@@ -41,6 +48,95 @@ async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Per-cycle observability into where the deterministic checklist rejects
+// candidates -- kept separate from the checklist's own pass/fail scoring
+// (checklist.ts) so this is pure logging with no effect on which signals
+// publish. Only covers candidates that already cleared the cheap
+// ticker-level pump% prefilter below (see the "prefilter: pump %" log) --
+// running the full checklist (candle history + a CoinGecko market cap
+// lookup per symbol) against all ~1,100 pairs every cycle would multiply
+// MEXC/CoinGecko call volume by ~10-50x and blow past CoinGecko's free-tier
+// rate limit.
+const CHECKLIST_CRITERIA = [
+  "pumpedFromBase",
+  "pumpAge",
+  "volumeDeclining",
+  "fundingRate",
+  "marketCap",
+  "btcNotStrong",
+] as const;
+type ChecklistCriterion = (typeof CHECKLIST_CRITERIA)[number];
+
+// How far past the threshold a failing value is, normalized so 0 = right at
+// the line and larger = further from passing. Only defined for criteria
+// with a numeric value on both sides of the line; btcNotStrong is a single
+// cycle-wide boolean (not per-symbol), so it has no meaningful distance.
+const CRITERION_DISTANCE: Partial<Record<ChecklistCriterion, (value: number) => number>> = {
+  pumpedFromBase: (v) => PUMP_THRESHOLD - v,
+  pumpAge: (v) => v - MAX_PUMP_AGE_HOURS,
+  volumeDeclining: (v) => v - 1, // ratio of later/earlier volume; passes when < 1
+  marketCap: (v) => v / MARKET_CAP_CEILING - 1,
+};
+
+interface CriterionMiss {
+  symbol: string;
+  note: string;
+  distance: number | null;
+}
+
+interface CriterionAccumulator {
+  evaluated: number;
+  rejected: number;
+  misses: CriterionMiss[];
+}
+
+type ChecklistStats = Record<ChecklistCriterion, CriterionAccumulator>;
+
+function newChecklistStats(): ChecklistStats {
+  const stats = {} as ChecklistStats;
+  for (const key of CHECKLIST_CRITERIA) {
+    stats[key] = { evaluated: 0, rejected: 0, misses: [] };
+  }
+  return stats;
+}
+
+function recordChecklist(stats: ChecklistStats, symbol: string, items: DeterministicChecklist["items"]): void {
+  for (const key of CHECKLIST_CRITERIA) {
+    const item = items[key];
+    if (!item) continue;
+    const acc = stats[key];
+    acc.evaluated++;
+    if (item.pass) continue;
+    const distanceFn = CRITERION_DISTANCE[key];
+    const distance = distanceFn && typeof item.value === "number" ? distanceFn(item.value) : null;
+    acc.rejected++;
+    acc.misses.push({ symbol, note: item.note, distance });
+  }
+}
+
+function logChecklistBreakdown(stats: ChecklistStats): void {
+  const summary = CHECKLIST_CRITERIA.map((key) => {
+    const acc = stats[key];
+    const nearestMisses = [...acc.misses]
+      .sort((a, b) => (a.distance ?? Infinity) - (b.distance ?? Infinity))
+      .slice(0, 5)
+      .map((m) => ({ symbol: m.symbol, note: m.note }));
+    return {
+      criterion: key,
+      evaluated: acc.evaluated,
+      rejected: acc.rejected,
+      rejectRate: acc.evaluated ? `${((acc.rejected / acc.evaluated) * 100).toFixed(1)}%` : "n/a",
+      nearestMisses,
+    };
+  }).sort((a, b) => b.rejected - a.rejected);
+
+  logger.info("deterministic checklist breakdown (candidates past the pump% prefilter only)", {
+    candidatesEvaluated: summary[0]?.evaluated ?? 0,
+    topRejector: summary.find((s) => s.rejected > 0)?.criterion ?? "none",
+    criteria: summary,
+  });
+}
+
 async function main() {
   await fs.mkdir(STATE_DIR, { recursive: true });
 
@@ -65,7 +161,7 @@ async function main() {
   const primaryContractAddress = (await publisher.getHealth()).contractAddress;
   logger.info("resolved primary contract from publisher", { contractAddress: primaryContractAddress });
 
-  async function processCandidate(ticker: Ticker, btcStrongUptrend: boolean): Promise<void> {
+  async function processCandidate(ticker: Ticker, btcStrongUptrend: boolean, checklistStats: ChecklistStats): Promise<void> {
     const symbol = ticker.symbol;
     const candles = await mexc.getCandles(symbol, CANDLE_INTERVAL, CANDLE_LOOKBACK);
     if (candles.length < 10) return;
@@ -75,6 +171,7 @@ async function main() {
     const marketCap = await getMarketCapUsd(baseAsset);
 
     const deterministic = scoreDeterministicChecklist({ candles, fundingRate, marketCap, btcStrongUptrend });
+    recordChecklist(checklistStats, symbol, deterministic.items);
     if (deterministic.score < config.deterministicThreshold) return;
 
     const pump = deterministic.pump;
@@ -296,19 +393,55 @@ async function main() {
       logger.warn("could not fetch BTC candles, assuming neutral", { error: (e as Error).message });
     }
 
+    // Stage 1: cheap ticker-level prefilter over every pair MEXC returns --
+    // no candle fetch or market cap lookup needed, so this is the only
+    // criterion checked against the full universe rather than just the
+    // survivors.
+    let missingRiseFallRate = 0;
+    const rejectedByPumpRate: Array<{ symbol: string; riseFallRate: number; distance: number }> = [];
+    for (const t of tickers) {
+      if (typeof t.riseFallRate !== "number") {
+        missingRiseFallRate++;
+        continue;
+      }
+      const abs = Math.abs(t.riseFallRate);
+      if (abs < config.prefilterRiseRate) {
+        rejectedByPumpRate.push({ symbol: t.symbol, riseFallRate: t.riseFallRate, distance: config.prefilterRiseRate - abs });
+      }
+    }
+    rejectedByPumpRate.sort((a, b) => a.distance - b.distance);
+
     const candidates = tickers.filter(
       (t) => typeof t.riseFallRate === "number" && Math.abs(t.riseFallRate) >= config.prefilterRiseRate,
     );
-    logger.info("prefilter", { totalPairs: tickers.length, candidates: candidates.length });
+
+    logger.info("prefilter: pump % (ticker-level, all pairs)", {
+      totalPairs: tickers.length,
+      passed: candidates.length,
+      rejected: rejectedByPumpRate.length,
+      missingRiseFallRate,
+      thresholdPct: `${(config.prefilterRiseRate * 100).toFixed(1)}%`,
+      nearestMisses: rejectedByPumpRate.slice(0, 10).map((r) => ({
+        symbol: r.symbol,
+        riseFallRatePct: `${(r.riseFallRate * 100).toFixed(2)}%`,
+      })),
+    });
+
+    // Stage 2: the full deterministic checklist (candle-based pump age,
+    // volume trend, market cap, BTC trend) only ever runs against pairs
+    // that already passed stage 1 -- see the comment above CHECKLIST_CRITERIA.
+    const checklistStats = newChecklistStats();
 
     for (const ticker of candidates) {
       try {
-        await processCandidate(ticker, btcStrongUptrend);
+        await processCandidate(ticker, btcStrongUptrend, checklistStats);
       } catch (e) {
         logger.error("error processing candidate, continuing", { symbol: ticker.symbol, error: (e as Error).message });
       }
       await sleep(INTER_SYMBOL_DELAY_MS);
     }
+
+    logChecklistBreakdown(checklistStats);
 
     logger.info("cycle complete");
   }

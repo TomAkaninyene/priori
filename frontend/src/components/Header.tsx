@@ -27,6 +27,12 @@ export function Header({ onRefresh, isRefreshing, lastUpdated }: HeaderProps) {
           <a href={sourcifyUrl} target="_blank" rel="noreferrer">
             Verified on Sourcify
           </a>
+          <a href="https://x.com/priori_hq" target="_blank" rel="noreferrer">
+            @priori_hq
+          </a>
+          <a href="https://github.com/TomAkaninyene/priori" target="_blank" rel="noreferrer">
+            GitHub
+          </a>
         </nav>
         <div className="header__refresh-group">
           {lastUpdated && <span className="header__updated">Updated {formatUpdatedAt(lastUpdated)}</span>}

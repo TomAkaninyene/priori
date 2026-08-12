@@ -13,10 +13,10 @@
 import type { Candle } from "./mexcClient.js";
 
 const FUNDING_RATE_FLOOR = -0.0005; // -0.05% as a decimal fraction
-const MARKET_CAP_CEILING = 500_000_000;
-const PUMP_THRESHOLD = 0.5; // 50%
+export const MARKET_CAP_CEILING = 500_000_000;
+export const PUMP_THRESHOLD = 0.5; // 50%
 const ROLLOVER_PULLBACK = 0.95; // price has pulled back 5%+ from peak
-const MAX_PUMP_AGE_HOURS = 6;
+export const MAX_PUMP_AGE_HOURS = 6;
 const MAX_ROLLOVER_AGE_HOURS = 24; // cap for "dump still playing out" allowance
 
 export interface PumpInfo {
@@ -31,6 +31,10 @@ export interface PumpInfo {
 interface ChecklistItem {
   pass: boolean;
   note: string;
+  // Raw metric behind the pass/fail, when there is one worth logging a
+  // distribution over (e.g. pumpPct, hours since pump start, volume ratio,
+  // market cap). Left undefined for booleans with no underlying scalar.
+  value?: number | null;
 }
 
 export interface DeterministicChecklist {
@@ -79,9 +83,12 @@ function scoreVolumeDeclining(candles: Candle[]): ChecklistItem {
   const earlierAvg = recent.slice(0, mid).reduce((s, c) => s + c.vol, 0) / mid;
   const laterAvg = recent.slice(mid).reduce((s, c) => s + c.vol, 0) / (recent.length - mid);
   const pass = laterAvg < earlierAvg;
+  // Ratio of later to earlier volume -- passes when < 1 (declining).
+  const ratio = earlierAvg > 0 ? laterAvg / earlierAvg : laterAvg > 0 ? Infinity : 1;
   return {
     pass,
     note: `recent avg vol ${laterAvg.toFixed(0)} vs earlier avg ${earlierAvg.toFixed(0)}`,
+    value: ratio,
   };
 }
 
@@ -104,6 +111,7 @@ export function scoreDeterministicChecklist({
   items.pumpedFromBase = {
     pass: !!pump && pump.pumpPct >= PUMP_THRESHOLD,
     note: pump ? `${(pump.pumpPct * 100).toFixed(1)}% from base` : "no data",
+    value: pump ? pump.pumpPct : null,
   };
 
   if (pump && pump.pumpStartTime) {
@@ -113,9 +121,10 @@ export function scoreDeterministicChecklist({
     items.pumpAge = {
       pass,
       note: `~${hoursSince.toFixed(1)}h since pump crossed +50%${rolledOver ? ", rolling over" : ""}`,
+      value: hoursSince,
     };
   } else {
-    items.pumpAge = { pass: false, note: "no confirmed pump start" };
+    items.pumpAge = { pass: false, note: "no confirmed pump start", value: null };
   }
 
   items.volumeDeclining = scoreVolumeDeclining(candles);
@@ -133,14 +142,16 @@ export function scoreDeterministicChecklist({
     items.marketCap = {
       pass: marketCap < MARKET_CAP_CEILING,
       note: `~$${(marketCap / 1_000_000).toFixed(0)}M market cap`,
+      value: marketCap,
     };
   } else {
-    items.marketCap = { pass: true, note: "unverified - could not resolve market cap, check manually" };
+    items.marketCap = { pass: true, note: "unverified - could not resolve market cap, check manually", value: null };
   }
 
   items.btcNotStrong = {
     pass: !btcStrongUptrend,
     note: btcStrongUptrend ? "BTC in a strong uptrend right now" : "BTC macro is neutral/down",
+    value: btcStrongUptrend ? 1 : 0,
   };
 
   const score = Object.values(items).filter((i) => i.pass).length;
