@@ -56,6 +56,13 @@ After setting the variable, you can run the deployment with the Sepolia network:
 npx hardhat ignition deploy --network sepolia ignition/modules/Counter.ts
 ```
 
+## Deployed contracts
+
+`SignalLedger` is deployed twice on X Layer mainnet (chain ID `196`, RPC `https://rpc.xlayer.tech`), both verified on [Sourcify](https://sourcify.dev/):
+
+- **v2 (current):** [`0x8c23dcA66D5e1248c3fB8541Ea9d09C9136289b2`](https://www.okx.com/web3/explorer/xlayer/address/0x8c23dcA66D5e1248c3fB8541Ea9d09C9136289b2), deployed August 12, 2026. All new signals publish here. Adds a per-signal `note` -- the AI's reasoning, emitted on-chain in `SignalPublished` only, never stored in the `Signal` struct -- and closes a path where `resolveSignal` could mark a still-live signal expired before `expiresAt`.
+- **v1 (legacy):** [`0x5380fadFeF5EaEBCE964Da4248d9327b84726Ed3`](https://www.okx.com/web3/explorer/xlayer/address/0x5380fadFeF5EaEBCE964Da4248d9327b84726Ed3), the prior deployment. It holds the first four signals and is still live and verified; its open signals are resolved by the same resolver against this address until they're all settled. See `LEGACY_CONTRACT_ADDRESSES` under [Publisher service](#publisher-service).
+
 ## Publisher service
 
 `service/` is a standalone Express HTTP API that publishes and resolves signals on the deployed `SignalLedger` contract. It's independent of the Hardhat CLI — it reads its own configuration from `.env` and talks to the chain directly via `ethers`.
@@ -71,6 +78,7 @@ Copy `.env.example` to `.env` and fill in:
 | `CHAIN_ID` | Chain ID of the target network (`1952` for X Layer testnet). |
 | `RPC_URL` | JSON-RPC endpoint for the target network. |
 | `PORT` | Port to listen on. Optional, defaults to `3001`. |
+| `LEGACY_CONTRACT_ADDRESSES` | Optional, comma-separated. Prior `SignalLedger` deployments to keep resolving against -- see [Deployed contracts](#deployed-contracts). `POST /resolve` accepts these plus `CONTRACT_ADDRESS`; `POST /signal` only ever publishes to `CONTRACT_ADDRESS`. |
 
 ### Running
 
