@@ -8,7 +8,7 @@ Deployed contract: `SignalLedger` at `0x5380fadFeF5EaEBCE964Da4248d9327b84726Ed3
 
 ## Project layout
 
-Three independent parts:
+Four independent parts:
 
 ```
 contracts/        Solidity source (SignalLedger.sol) and unit tests (*.t.sol)
@@ -31,6 +31,17 @@ frontend/          Priori: read-only Vite + React + TypeScript dashboard.
                    `npx tsc --noEmit` at the repo root doesn't try to
                    typecheck its JSX/bundler-mode files under Node module
                    settings.
+
+detector/          Self-contained signal generator: polls MEXC's public
+                   futures API (free, no key) for the pump-and-fade short
+                   setup, screens with a deterministic checklist, then rates
+                   survivors with a pluggable conviction provider (Gemini by
+                   default, behind an interface in convictionProvider.ts) and
+                   publishes/resolves through service/ over HTTP. Independent
+                   of the Hardhat CLI and of any other project -- plain
+                   TypeScript run via `tsx`, own state under detector/state/
+                   (gitignored). See README.md "Detector" section for the
+                   full pipeline and env vars.
 ```
 
 ## Env vars
@@ -39,6 +50,7 @@ Root `.env` (dotenv, gitignored -- see `.env.example`):
 - `PRIVATE_KEY` -- deployer/owner key, used by `hardhat.config.ts` (xlayerTestnet network) and by `service/` to sign transactions.
 - `CONTRACT_ADDRESS`, `CHAIN_ID`, `RPC_URL` -- used by `service/`.
 - `PORT` -- optional, service listen port, defaults to 3001.
+- `detector/` reads its own set of `DETECTOR_*`, `GEMINI_*`, `MEXC_FUTURES_BASE_URL`, `CONVICTION_PROVIDER`, and `PRIORI_PUBLISHER_URL` vars from the same root `.env` -- see `.env.example` and README.md "Detector" for the full list and defaults.
 
 `frontend/.env` (separate file, its own `.env.example`):
 - `VITE_RPC_URL`, `VITE_CONTRACT_ADDRESS`, `VITE_CHAIN_ID` -- public, no secrets.

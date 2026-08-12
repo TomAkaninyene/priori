@@ -149,6 +149,74 @@ A single signal, or `404` if the id doesn't exist.
 curl http://127.0.0.1:3001/signal/1
 ```
 
+## Detector
+
+`detector/` is a self-contained signal generator for Priori. It polls MEXC's public futures API on an
+interval (free, no API key), screens pairs against a deterministic checklist for a pump-and-fade short
+setup, sends candidates that clear the screen to a conviction provider for a 0-10 rating, and publishes/
+resolves signals through the publisher service above. It has no dependency on any other project -- it's
+independent in the same way `service/` is.
+
+### Pipeline
+
+1. **Detection (free, unmetered).** Every `DETECTOR_POLL_INTERVAL_MS`, fetch all MEXC futures tickers, pre-filter
+   by 24h price change (`DETECTOR_PREFILTER_RISE_RATE`), then for pairs that pass, fetch recent candles and score
+   six deterministic checklist items: pumped 50%+ from a recent base, pump age under 6h (or still visibly rolling
+   over), declining volume, funding rate not too negative, market cap under $500M, and BTC not in a strong
+   uptrend. Candidates need `DETECTOR_DETERMINISTIC_THRESHOLD` items passing (out of 6) to proceed. Nothing here
+   costs money or calls a rate-limited API.
+2. **Conviction (Gemini free tier).** Candidates that clear the screen are sent to a `ConvictionProvider` --
+   symbol, current/base/peak price, funding rate, market cap, and the last ~20 candles -- and asked for strict
+   JSON: `conviction` (integer 0-10), `conviction_note`, `pattern_confirmed`, `catalyst_clear`. The provider sits
+   behind an interface (`detector/convictionProvider.ts`); Gemini is the only implementation today
+   (`detector/geminiProvider.ts`), selected via `CONVICTION_PROVIDER`. Swapping in Claude or another model means
+   implementing that interface and adding a case to `createConvictionProvider()` -- detection and publishing code
+   doesn't change.
+3. **Validation (fail closed).** Whatever a provider returns is treated as untrusted until
+   `validateConvictionResponse()` confirms `conviction` is an integer in `[0, 10]` and the other three fields are
+   present with the right types. Malformed JSON, a missing field, or an out-of-range score is logged and the
+   candidate is skipped -- no signal is ever published on an unvalidated score, regardless of which provider
+   produced it.
+4. **Rate and cost control.** Before any conviction call, `detector/rateLimiter.ts` checks three things:
+   a per-minute cap, a per-day cap (persisted to disk so it survives restarts), and a per-symbol cooldown (so a
+   pair that keeps qualifying isn't re-judged every cycle). Any cap hit is logged and that symbol is skipped for
+   the cycle -- nothing is queued or retried later. If Gemini itself returns 429, `geminiProvider.ts` retries with
+   exponential backoff up to `GEMINI_MAX_RETRIES` before giving up on that symbol for the cycle.
+5. **Publishing.** A candidate with `conviction >= DETECTOR_CONVICTION_THRESHOLD` (default 7) is published via
+   `POST /signal` on the publisher service, direction always short. Since the conviction call above doesn't return
+   a suggested stop/target, they're derived deterministically from the pump structure: stop sits
+   `DETECTOR_STOP_BUFFER_PCT` above the swing high since the pump started, target sits
+   `DETECTOR_TARGET_RR_MULTIPLE` multiples of that risk below entry. A token that was already published within
+   the last 24h is skipped (dedup).
+6. **Resolution watcher.** Every cycle, before anything conviction-related, every published-but-unresolved signal
+   is checked against that cycle's already-fetched prices: target touched first resolves outcome `1`, stop
+   touched first resolves outcome `2`, neither before `expiresAt` resolves outcome `3` at the current price. Fully
+   automatic, no confirmation step, and it runs even when the day's conviction-call budget is exhausted, since it
+   only uses free price data already in hand.
+
+A Gemini failure, a publisher failure, or an MEXC/RPC failure at any stage is logged and the detector moves on --
+nothing here can crash the polling loop.
+
+### Configuration
+
+All of the above is tunable via `.env` (see `.env.example` for the full list with defaults): poll interval,
+pre-filter and deterministic thresholds, `CONVICTION_PROVIDER`, `GEMINI_API_KEY`, `GEMINI_MODEL` (defaults to
+`gemini-flash-lite-latest`, Google's rolling alias for the current highest-daily-quota free-tier Flash-Lite
+model -- pinned Flash-Lite versions get retired for new API keys over time, so the alias is used instead of a
+pinned version; check [ai.google.dev/gemini-api/docs/rate-limits](https://ai.google.dev/gemini-api/docs/rate-limits)
+for current numbers before tuning the rate caps below it), `GEMINI_MAX_REQUESTS_PER_MINUTE`, `GEMINI_MAX_REQUESTS_PER_DAY`,
+`GEMINI_SYMBOL_COOLDOWN_MINUTES`, `DETECTOR_CONVICTION_THRESHOLD`, `DETECTOR_STOP_BUFFER_PCT`,
+`DETECTOR_TARGET_RR_MULTIPLE`, and `PRIORI_PUBLISHER_URL` (the publisher service above, which must be running).
+
+### Running
+
+```shell
+npm run detector
+```
+
+State (published-signal records, the daily Gemini call count, per-symbol cooldowns) is kept in
+`detector/state/*.json`, gitignored, and persists across restarts.
+
 ## Frontend
 
 `frontend/` is Priori, a read-only Vite + React + TypeScript dashboard for the `SignalLedger` contract. It talks directly to the chain over a public RPC endpoint using `ethers` -- there's no backend, no API keys, and no connection to the publisher service. It's a static site: build it and deploy the output anywhere that serves static files.
