@@ -5,3 +5,5 @@ cache
 typechain-types
 types
 detector/state
+.vercel
+.env*
