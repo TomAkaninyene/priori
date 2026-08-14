@@ -1,23 +1,29 @@
-# Sample Hardhat 3 Project (`mocha` and `ethers`)
+# Priori
 
-This project showcases a Hardhat 3 project using `mocha` for tests and the `ethers` library for Ethereum interactions.
+Priori is an on-chain, append-only ledger of trading signals: signals are published *before* their outcome is
+known, and the `SignalLedger` contract has no edit, delete, pause, or upgrade function for anyone, including its
+owner. A signal left unresolved past its expiry counts as a loss in the effective record, so staying silent can
+never improve the track record.
 
-To learn more about Hardhat 3, please visit the [Getting Started guide](https://hardhat.org/docs/getting-started#getting-started-with-hardhat-3). To share your feedback, join our [Hardhat 3](https://hardhat.org/hardhat3-telegram-group) Telegram group or [open an issue](https://github.com/NomicFoundation/hardhat/issues/new) in our GitHub issue tracker.
+**Live dashboard:** https://priori-delta-nine.vercel.app — reads both deployed contracts (below) directly from
+chain over a public RPC, merges their history into one table (newest first, labeled v1/v2 per row), and shows
+the aggregate track record.
 
-## Project Overview
+Four independent parts, each documented in its own section below:
 
-This example project includes:
+- **`contracts/`** — the `SignalLedger` Solidity contract (Foundry-compatible unit tests) and its Ignition deployment module.
+- **[Publisher service](#publisher-service)** (`service/`) — an owner-only HTTP API that publishes/resolves signals on-chain.
+- **[Detector](#detector)** (`detector/`) — a self-contained bot that screens MEXC futures for a pump-and-fade short setup, rates candidates with Gemini, and publishes qualifying signals through the service above.
+- **[Frontend](#frontend)** (`frontend/`) — Priori, the public read-only dashboard live at the URL above.
 
-- A simple Hardhat configuration file.
-- Foundry-compatible Solidity unit tests.
-- TypeScript integration tests using `mocha` and ethers.js
-- Examples demonstrating how to connect to different types of networks, including locally simulating OP mainnet.
+See `CLAUDE.md` for the full architecture writeup and env var reference.
 
-## Usage
+## Contract development
 
-### Running Tests
+Built on Hardhat 3, with `mocha`/`ethers` integration tests and Foundry-compatible Solidity unit tests
+(`contracts/*.t.sol`).
 
-To run all the tests in the project, execute the following command:
+### Running tests
 
 ```shell
 npx hardhat test
@@ -30,31 +36,19 @@ npx hardhat test solidity
 npx hardhat test mocha
 ```
 
-### Make a deployment to Sepolia
+### Deploying
 
-This project includes an example Ignition module to deploy the contract. You can deploy this module to a locally simulated chain or to Sepolia.
-
-To run the deployment to a local chain:
-
-```shell
-npx hardhat ignition deploy ignition/modules/Counter.ts
-```
-
-To run the deployment to Sepolia, you need an account with funds to send the transaction. The provided Hardhat configuration includes a Configuration Variable called `SEPOLIA_PRIVATE_KEY`, which you can use to set the private key of the account you want to use.
-
-You can set the `SEPOLIA_PRIVATE_KEY` variable using the `hardhat-keystore` plugin or by setting it as an environment variable.
-
-To set the `SEPOLIA_PRIVATE_KEY` config variable using `hardhat-keystore`:
+Every deployment here was done via Ignition against X Layer mainnet, using the `production` build profile
+(optimizer on, 200 runs) — `hardhat run`/`hardhat verify` recompile with the `default` profile (optimizer off)
+unless told otherwise, so bytecode won't match on-chain bytecode without passing `--build-profile production`
+explicitly to **both** the deploy and the verify step:
 
 ```shell
-npx hardhat keystore set SEPOLIA_PRIVATE_KEY
+npx hardhat ignition deploy ignition/modules/SignalLedger.ts --network xlayerMainnet --build-profile production
+npx hardhat verify --network xlayerMainnet --build-profile production <deployed-address>
 ```
 
-After setting the variable, you can run the deployment with the Sepolia network:
-
-```shell
-npx hardhat ignition deploy --network sepolia ignition/modules/Counter.ts
-```
+`xlayerTestnet` is also configured in `hardhat.config.ts` for pre-mainnet testing.
 
 ## Deployed contracts
 
@@ -75,7 +69,7 @@ Copy `.env.example` to `.env` and fill in:
 | --- | --- |
 | `PRIVATE_KEY` | Private key of the wallet that signs `publishSignal`/`resolveSignal` transactions (must be the contract owner). |
 | `CONTRACT_ADDRESS` | Deployed `SignalLedger` address. |
-| `CHAIN_ID` | Chain ID of the target network (`1952` for X Layer testnet). |
+| `CHAIN_ID` | Chain ID of the target network (`196` for X Layer mainnet, `1952` for testnet). |
 | `RPC_URL` | JSON-RPC endpoint for the target network. |
 | `PORT` | Port to listen on. Optional, defaults to `3001`. |
 | `LEGACY_CONTRACT_ADDRESSES` | Optional, comma-separated. Prior `SignalLedger` deployments to keep resolving against -- see [Deployed contracts](#deployed-contracts). `POST /resolve` accepts these plus `CONTRACT_ADDRESS`; `POST /signal` only ever publishes to `CONTRACT_ADDRESS`. |
@@ -242,7 +236,22 @@ State (published-signal records, the daily Gemini call count, per-symbol cooldow
 
 ## Frontend
 
-`frontend/` is Priori, a read-only Vite + React + TypeScript dashboard for the `SignalLedger` contract. It talks directly to the chain over a public RPC endpoint using `ethers` -- there's no backend, no API keys, and no connection to the publisher service. It's a static site: build it and deploy the output anywhere that serves static files.
+`frontend/` is Priori, a read-only Vite + React + TypeScript dashboard, live at
+https://priori-delta-nine.vercel.app. It talks directly to the chain over a public RPC endpoint using `ethers` --
+there's no backend, no API keys, and no connection to the publisher service. It's a static site: build it and
+deploy the output anywhere that serves static files.
+
+It reads **both** deployed contracts (v1 and v2, see [Deployed contracts](#deployed-contracts)) and merges their
+signal history into one table, newest first by each signal's own on-chain `publishedAt` (not by id, since ids
+restart at 1 per contract), labeled v1/v2 per row. Stats (wins/losses/hit rate/etc.) aggregate across both.
+
+Per-signal notes live only in v2's `SignalPublished` event data, never in the `Signal` struct `getSignal()`
+returns (v1 predates the note field entirely, so its rows always show "—" there). Reading them means querying
+event logs, and X Layer's public RPC caps `eth_getLogs` at a 100-block range while the chain is tens of millions
+of blocks deep -- an unbounded query never works, and only gets worse as this append-only ledger grows. Instead,
+each note lookup computes its target block directly from the signal's own `publishedAt` (which is `block.timestamp`
+at publish) against X Layer's fixed 1-second block time, queries a small window around it, and widens that
+window (logging each time) before giving up -- see `frontend/src/hooks/useSignalLedger.ts`.
 
 ### Local dev
 
@@ -258,8 +267,9 @@ Configuration comes entirely from env vars (see `frontend/.env.example`):
 | Variable | Description |
 | --- | --- |
 | `VITE_RPC_URL` | Public JSON-RPC endpoint to read from. |
-| `VITE_CONTRACT_ADDRESS` | Deployed `SignalLedger` address. |
-| `VITE_CHAIN_ID` | Chain ID of the target network (`1952` for X Layer testnet). |
+| `VITE_CONTRACT_ADDRESS` | Deployed `SignalLedger` address (v2/current -- the v1 address is hardcoded in `frontend/src/lib/contract.ts` since it's fixed history, not environment-specific). |
+| `VITE_CHAIN_ID` | Chain ID of the target network (`196` for X Layer mainnet). |
+| `VITE_CONVICTION_THRESHOLD`, `VITE_MIN_RR` | Optional, informational only -- mirrors the detector's actual configured `DETECTOR_CONVICTION_THRESHOLD`/`DETECTOR_MIN_RR` so the dashboard can state what filter produced the record. Not read from the detector at runtime (this frontend has no backend); keep in sync by hand, see the comments in `frontend/src/lib/config.ts`. |
 
 ### Build
 
@@ -272,8 +282,11 @@ Outputs a static site to `frontend/dist`.
 
 ### Deploying to Vercel
 
+The live dashboard (https://priori-delta-nine.vercel.app) is deployed this way, auto-deploying on every push to
+`master`:
+
 1. Import this repository into Vercel.
 2. Set the project's **Root Directory** to `frontend`.
 3. Framework preset: **Vite** (Vercel detects this automatically; build command `npm run build`, output directory `dist`).
-4. Add the three env vars above (`VITE_RPC_URL`, `VITE_CONTRACT_ADDRESS`, `VITE_CHAIN_ID`) in the Vercel project settings.
+4. Add the required env vars above (`VITE_RPC_URL`, `VITE_CONTRACT_ADDRESS`, `VITE_CHAIN_ID`; optionally `VITE_CONVICTION_THRESHOLD`/`VITE_MIN_RR`) in the Vercel project settings.
 5. Deploy. Since it's a static site with no server-side code, no other configuration is needed.

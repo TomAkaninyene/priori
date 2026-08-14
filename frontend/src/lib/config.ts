@@ -43,9 +43,10 @@ function loadConfig(): AppConfig {
   // These fallbacks must stay in sync with the detector's currently
   // configured DETECTOR_CONVICTION_THRESHOLD / DETECTOR_MIN_RR (root .env) --
   // as of this writing the detector runs with threshold 6 (overriding its
-  // own code default of 7) and the default min R:R of 1.5.
+  // own code default of 7) and min R:R 1.2 (overriding its own code default
+  // of 1.5).
   const convictionThreshold = readOptionalNumber("VITE_CONVICTION_THRESHOLD", 6);
-  const minRiskReward = readOptionalNumber("VITE_MIN_RR", 1.5);
+  const minRiskReward = readOptionalNumber("VITE_MIN_RR", 1.2);
 
   return { rpcUrl, contractAddress, chainId, convictionThreshold, minRiskReward };
 }
