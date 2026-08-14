@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { provider, signalLedger } from "../lib/contract";
-import type { Signal, Stats } from "../lib/types";
+import { provider, signalLedgerV1, signalLedgerV2 } from "../lib/contract";
+import type { Signal, SignalVersion, Stats } from "../lib/types";
+import type { Contract } from "ethers";
 
 export type LedgerStatus = "loading" | "error" | "ready";
 
@@ -36,9 +37,17 @@ interface RawStats {
   unresolvedExpired: bigint;
 }
 
-function toSignal(raw: RawSignal, notesById: Map<string, string>): Signal {
+interface VersionedRawSignal {
+  raw: RawSignal;
+  version: SignalVersion;
+}
+
+const EMPTY_NOTES: Map<string, string> = new Map();
+
+function toSignal(raw: RawSignal, version: SignalVersion, notesById: Map<string, string>): Signal {
   return {
     id: raw.id,
+    version,
     token: raw.token,
     direction: Number(raw.direction),
     score: Number(raw.score),
@@ -55,11 +64,31 @@ function toSignal(raw: RawSignal, notesById: Map<string, string>): Signal {
   };
 }
 
-// Notes only ever exist in SignalPublished's event data (see abi.ts), never
-// in the struct getSignal() returns, so they have to be read from logs
-// separately. This is supplementary, not core ledger data -- if the RPC
-// can't serve a log query, the dashboard should still render every signal's
-// real on-chain fields with a blank note rather than fail outright.
+function sumStats(a: RawStats, b: RawStats): Stats {
+  return {
+    totalPublished: a.totalPublished + b.totalPublished,
+    totalResolved: a.totalResolved + b.totalResolved,
+    wins: a.wins + b.wins,
+    losses: a.losses + b.losses,
+    unresolvedExpired: a.unresolvedExpired + b.unresolvedExpired,
+  };
+}
+
+async function fetchContractSignals(contract: Contract, version: SignalVersion): Promise<VersionedRawSignal[]> {
+  const countRaw = (await contract.getSignalCount()) as bigint;
+  const count = Number(countRaw);
+  const ids = Array.from({ length: count }, (_, index) => BigInt(count - index));
+  const rawSignals = (await Promise.all(ids.map((id) => contract.getSignal(id)))) as RawSignal[];
+  return rawSignals.map((raw) => ({ raw, version }));
+}
+
+// Notes only ever exist in v2's SignalPublished event data (see abi.ts),
+// never in the struct getSignal() returns, so they have to be read from
+// logs separately -- and only for v2, since v1's SignalPublished predates
+// the note param entirely. This is supplementary, not core ledger data --
+// if the RPC can't serve a log query, the dashboard should still render
+// every signal's real on-chain fields with a blank note rather than fail
+// outright.
 //
 // An unbounded queryFilter (fromBlock 0 -> latest) is not an option here:
 // X Layer's public RPC caps eth_getLogs at a 100-block range, while the
@@ -88,7 +117,7 @@ async function fetchNoteForSignal(
     const fromBlock = Math.max(0, estimatedBlock - pad);
     const toBlock = Math.min(latestBlock.number, estimatedBlock + pad);
     try {
-      const events = await signalLedger.queryFilter(signalLedger.filters.SignalPublished(raw.id), fromBlock, toBlock);
+      const events = await signalLedgerV2.queryFilter(signalLedgerV2.filters.SignalPublished(raw.id), fromBlock, toBlock);
       const match = events.find((event) => "args" in event && event.args);
       if (match && "args" in match && match.args) {
         return match.args.note as string;
@@ -162,25 +191,30 @@ export function useSignalLedger() {
     async function load() {
       setState((prev) => ({ ...prev, status: "loading", error: null }));
       try {
-        const [stats, countRaw] = await Promise.all([
-          signalLedger.getStats() as Promise<RawStats>,
-          signalLedger.getSignalCount() as Promise<bigint>,
+        const [statsV1, statsV2, v1Signals, v2Signals] = await Promise.all([
+          signalLedgerV1.getStats() as Promise<RawStats>,
+          signalLedgerV2.getStats() as Promise<RawStats>,
+          fetchContractSignals(signalLedgerV1, "v1"),
+          fetchContractSignals(signalLedgerV2, "v2"),
         ]);
-
-        const count = Number(countRaw);
-        // Newest first: ids are sequential starting at 1, so descending id
-        // order is exactly chronological descending order.
-        const ids = Array.from({ length: count }, (_, index) => BigInt(count - index));
-        const rawSignals = (await Promise.all(ids.map((id) => signalLedger.getSignal(id)))) as RawSignal[];
-        const notesById = await fetchNotesById(rawSignals);
+        // Notes only apply to v2 -- v1's SignalPublished has no note param.
+        const notesById = await fetchNotesById(v2Signals.map(({ raw }) => raw));
 
         if (cancelled) {
           return;
         }
+
+        const signals = [...v1Signals, ...v2Signals]
+          .map(({ raw, version }) => toSignal(raw, version, version === "v2" ? notesById : EMPTY_NOTES))
+          // Each signal keeps its own contract's on-chain publishedAt; ids
+          // restart at 1 per contract, so chronological order (not id order)
+          // is the only correct "newest first" across both.
+          .sort((a, b) => (a.publishedAt === b.publishedAt ? 0 : a.publishedAt < b.publishedAt ? 1 : -1));
+
         setState({
           status: "ready",
-          signals: rawSignals.map((raw) => toSignal(raw, notesById)),
-          stats,
+          signals,
+          stats: sumStats(statsV1, statsV2),
           error: null,
           lastUpdated: new Date(),
         });

@@ -336,6 +336,15 @@ code {
   border-color: var(--loss);
 }
 
+.badge--v1 {
+  color: var(--muted);
+}
+
+.badge--v2 {
+  color: var(--text);
+  border-color: var(--text);
+}
+
 .outcome {
   font-family: var(--font-sans);
 }

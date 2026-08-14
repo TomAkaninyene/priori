@@ -20,6 +20,7 @@ export function SignalTable({ signals }: SignalTableProps) {
           <thead>
             <tr>
               <th>ID</th>
+              <th>Version</th>
               <th>Token</th>
               <th>Direction</th>
               <th>Score</th>
@@ -37,8 +38,11 @@ export function SignalTable({ signals }: SignalTableProps) {
             {signals.map((signal) => {
               const status = signalStatus(signal, nowSeconds);
               return (
-                <tr key={signal.id.toString()}>
+                <tr key={`${signal.version}-${signal.id}`}>
                   <td data-label="ID">{signal.id.toString()}</td>
+                  <td data-label="Version">
+                    <span className={`badge badge--${signal.version}`}>{signal.version}</span>
+                  </td>
                   <td data-label="Token">{signal.token}</td>
                   <td data-label="Direction">{directionLabel(signal.direction)}</td>
                   <td data-label="Score" className="signal-table__score">

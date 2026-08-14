@@ -5,8 +5,11 @@ export const OUTCOME_TARGET_HIT = 1;
 export const OUTCOME_STOP_HIT = 2;
 export const OUTCOME_EXPIRED = 3;
 
+export type SignalVersion = "v1" | "v2";
+
 export interface Signal {
   id: bigint;
+  version: SignalVersion;
   token: string;
   direction: number;
   score: number;
@@ -20,9 +23,10 @@ export interface Signal {
   exitPrice: bigint;
   resolvedAt: bigint;
   // Not part of the on-chain Signal struct -- read separately from
-  // SignalPublished event logs. Empty string if the signal was published
-  // without a note, or if the note couldn't be read (e.g. the RPC doesn't
-  // have logs this old).
+  // SignalPublished event logs. Empty string if the note couldn't be read,
+  // or if the signal has no note to read in the first place: v1's
+  // SignalPublished predates the note param entirely, so every v1 signal
+  // is empty here regardless of RPC availability.
   note: string;
 }
 
