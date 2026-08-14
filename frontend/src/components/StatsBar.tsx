@@ -14,6 +14,17 @@ function formatHitRate(stats: Stats): string {
   return `${rate.toFixed(1)}%`;
 }
 
+// Small samples swing wildly -- 25.0% off 4 signals looks as precise as
+// 25.0% off 400, but isn't. Rather than hide the rate outright, surface the
+// denominator right under it so nobody reads it as a stable track record.
+function formatHitRateSampleSize(stats: Stats): string | null {
+  const total = stats.wins + stats.losses;
+  if (total === 0n) {
+    return null;
+  }
+  return `n=${total.toString()} resolved`;
+}
+
 // Breaks the headline losses figure down by how each resolved loss actually
 // played out. Computed from the individually-fetched signals rather than
 // getStats(), which only returns the aggregate count. Signals still sitting
@@ -40,6 +51,7 @@ export function StatsBar({ stats, signals }: StatsBarProps) {
   // Not resolved and not yet past expiry -- still an open call.
   const pending = stats.totalPublished - stats.totalResolved - stats.unresolvedExpired;
   const lossBreakdown = formatLossBreakdown(signals);
+  const hitRateSampleSize = formatHitRateSampleSize(stats);
 
   return (
     <section className="stats" aria-label="Ledger statistics">
@@ -63,6 +75,7 @@ export function StatsBar({ stats, signals }: StatsBarProps) {
       <div className="stat">
         <span className="stat__label">Hit rate</span>
         <span className="stat__value">{formatHitRate(stats)}</span>
+        {hitRateSampleSize && <span className="stat__note">{hitRateSampleSize}</span>}
       </div>
       <div className="stat">
         <span className="stat__label">Pending</span>
