@@ -1,7 +1,8 @@
-import type { Stats } from "../lib/types";
+import { OUTCOME_EXPIRED, OUTCOME_STOP_HIT, type Signal, type Stats } from "../lib/types";
 
 interface StatsBarProps {
   stats: Stats;
+  signals: Signal[];
 }
 
 function formatHitRate(stats: Stats): string {
@@ -13,9 +14,32 @@ function formatHitRate(stats: Stats): string {
   return `${rate.toFixed(1)}%`;
 }
 
-export function StatsBar({ stats }: StatsBarProps) {
+// Breaks the headline losses figure down by how each resolved loss actually
+// played out. Computed from the individually-fetched signals rather than
+// getStats(), which only returns the aggregate count. Signals still sitting
+// unresolved past expiry aren't included here -- they're already surfaced
+// separately below as "Unresolved, past expiry".
+function formatLossBreakdown(signals: Signal[]): string | null {
+  const stopHits = signals.filter((s) => s.resolved && s.outcome === OUTCOME_STOP_HIT).length;
+  const expired = signals.filter((s) => s.resolved && s.outcome === OUTCOME_EXPIRED).length;
+  const total = stopHits + expired;
+  if (total === 0) {
+    return null;
+  }
+  const parts = [];
+  if (stopHits > 0) {
+    parts.push(`${stopHits} stop hit${stopHits === 1 ? "" : "s"}`);
+  }
+  if (expired > 0) {
+    parts.push(`${expired} expired`);
+  }
+  return `${total} loss${total === 1 ? "" : "es"} — ${parts.join(", ")}`;
+}
+
+export function StatsBar({ stats, signals }: StatsBarProps) {
   // Not resolved and not yet past expiry -- still an open call.
   const pending = stats.totalPublished - stats.totalResolved - stats.unresolvedExpired;
+  const lossBreakdown = formatLossBreakdown(signals);
 
   return (
     <section className="stats" aria-label="Ledger statistics">
@@ -34,6 +58,7 @@ export function StatsBar({ stats }: StatsBarProps) {
       <div className="stat">
         <span className="stat__label">Losses</span>
         <span className="stat__value stat__value--loss">{stats.losses.toString()}</span>
+        {lossBreakdown && <span className="stat__note">{lossBreakdown}</span>}
       </div>
       <div className="stat">
         <span className="stat__label">Hit rate</span>

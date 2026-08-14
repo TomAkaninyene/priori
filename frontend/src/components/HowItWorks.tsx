@@ -11,6 +11,10 @@ export function HowItWorks() {
         Once a signal is published, its record is permanent.
       </p>
       <p>
+        Every signal carries a 24-hour window to work: if the price reaches neither the target nor the stop before
+        it expires, that still counts as a loss — the timeframe is part of the call, not just the direction.
+      </p>
+      <p>
         A signal left unresolved past its expiry still counts against the record: the contract folds
         unresolved-expired signals into the loss tally, so staying silent can never improve the track record.
       </p>

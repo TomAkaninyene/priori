@@ -32,7 +32,7 @@ function App() {
 
         {status === "ready" && stats && (
           <>
-            <StatsBar stats={stats} />
+            <StatsBar stats={stats} signals={signals} />
             <p className="filter-note">
               Shown here: signals that cleared conviction ≥ {config.convictionThreshold}/10 and risk:reward ≥{" "}
               {config.minRiskReward}:1 to publish.
