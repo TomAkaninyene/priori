@@ -125,6 +125,40 @@ code {
   border-color: var(--amber);
 }
 
+.header__icon-links {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  /* Extra separation on top of .header__links' own gap so the icon group
+     reads as distinct from the text links -- an X mark sitting right next
+     to "Contract on X Layer" could otherwise momentarily look related to
+     that link rather than to the social link it actually is. */
+  margin-left: 0.5rem;
+}
+
+/* .header__links a's border-bottom (0,1,1 specificity) would otherwise beat
+   a bare .header__icon-link (0,1,0), so this is scoped through the parent
+   to win outright rather than relying on source order. */
+.header__links .header__icon-link {
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
+  border-bottom: none;
+}
+
+.header__links .header__icon-link:hover {
+  color: var(--amber);
+}
+
+.header__icon-link svg {
+  /* Sized off the link row's own font-size (0.85rem) rather than a fixed
+     pixel value, and a touch under 1em so the glyph reads level with the
+     text's cap height instead of looming over it. */
+  width: 0.95em;
+  height: 0.95em;
+  fill: currentColor;
+}
+
 .header__refresh-group {
   display: flex;
   align-items: center;
